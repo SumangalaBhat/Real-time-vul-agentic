@@ -156,11 +156,33 @@ jobs:
           path: reports/owners.tsv
 
 # =========================
-# 🔹 6. PR COMMENT (REAL-TIME)
+# 🔹 6. SECURITY GATE (SMART)
+# =========================
+  security-gate:
+    runs-on: ubuntu-latest
+    needs: code-scan
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-report
+          path: reports
+
+      - name: Block PR if HIGH found
+        run: |
+          HIGH=$(grep -c $'\tHIGH\t' reports/code.tsv || true)
+
+          if [ "$HIGH" -gt 0 ]; then
+            echo "❌ HIGH vulnerabilities in changed code → BLOCKING"
+            exit 1
+          fi
+
+# =========================
+# 🔹 7. PR COMMENT (REAL-TIME)
 # =========================
   pr-comment:
     runs-on: ubuntu-latest
-    needs: author-mapping
+    needs: [author-mapping, security-gate]
     if: github.event_name == 'pull_request'
 
     steps:
@@ -183,33 +205,11 @@ jobs:
             });
 
 # =========================
-# 🔹 7. SECURITY GATE (SMART)
-# =========================
-  security-gate:
-    runs-on: ubuntu-latest
-    needs: code-scan
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: code-report
-          path: reports
-
-      - name: Block PR if HIGH found
-        run: |
-          HIGH=$(grep -c $'\tHIGH\t' reports/code.tsv || true)
-
-          if [ "$HIGH" -gt 0 ]; then
-            echo "❌ HIGH vulnerabilities in changed code → BLOCKING"
-            exit 1
-          fi
-
-# =========================
 # 🔹 8. HTML REPORT
 # =========================
   report:
     runs-on: ubuntu-latest
-    needs: [author-mapping, dependency-scan]
+    needs: [author-mapping, dependency-scan, code-scan]
     if: always()
 
     steps:
@@ -234,11 +234,4 @@ jobs:
         with:
           path: public
 
-# =========================
-# 🔹 9. DEPLOY
-# =========================
-  deploy:
-    runs-on: ubuntu-latest
-    needs: report
-    steps:
-      - uses: actions/deploy-pages@v4
+
