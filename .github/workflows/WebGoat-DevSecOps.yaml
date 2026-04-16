@@ -99,6 +99,12 @@ jobs:
           name: code-report
           path: reports/code.tsv
 
+      - name: Prepare AI Fix Input
+        run: |
+          awk -F '\t' 'NR>1 {
+            print "FILE: " $3 "\nLINE: " $4 "\nISSUE: " $1 "\nCODE: " $5 "\n---"
+          }' reports/code.tsv > reports/fix-input.txt
+
 # =========================
 # 🔹 4. DEPENDENCY SCAN
 # =========================
@@ -177,11 +183,6 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare AI Fix Input
-        run: |
-          awk -F '\t' 'NR>1 {
-            print "FILE: " $3 "\nLINE: " $4 "\nISSUE: " $1 "\nCODE: " $5 "\n---"
-          }' reports/code.tsv > reports/fix-input.txt
 
 # =========================
 # 🔹 7. PR COMMENT (REAL-TIME)
@@ -189,26 +190,54 @@ jobs:
   pr-comment:
     runs-on: ubuntu-latest
     needs: [author-mapping, security-gate]
-    if: github.event_name == 'pull_request'
-
+    if: always() && github.event_name == 'pull_request'
+  
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: owner-report
           path: reports
-
+  
+      - name: Check report exists
+        run: |
+          if [ ! -f reports/owners.tsv ]; then
+            echo "⚠️ No report found"
+            exit 0
+          fi
+  
       - uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const data = fs.readFileSync('reports/owners.tsv','utf8');
+  
+            let data = fs.readFileSync('reports/owners.tsv','utf8');
+  
+            // Limit size (GitHub comment max ~65k)
+            data = data.substring(0, 60000);
+  
+            const body = `
+            🚨 **Security Issues Found**
+            
+            \`\`\`
+            ${data}
+            \`\`\`
+            `;
+            
+                      await github.rest.issues.createComment({
+                        issue_number: context.issue.number,
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        body: body
+                      });
 
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: "🚨 Security Issues Found:\n\n```" + data.substring(0,3000) + "```"
-            });
+      - name: Check vulnerabilities
+        id: check
+        run: |
+          COUNT=$(grep -c $'\tHIGH\t' reports/owners.tsv || true)
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+      
+      - uses: actions/github-script@v7
+        if: steps.check.outputs.count != '0'
 
 # =========================
 # 🔹 8. HTML REPORT (ENHANCED)
