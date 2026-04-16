@@ -1,4 +1,4 @@
-name: 🔐 WebGoat DevSecOps Pipeline
+name: WebGoat DevSecOps Pipeline
 
 on:
   pull_request:
@@ -176,6 +176,12 @@ jobs:
             echo "❌ HIGH vulnerabilities in changed code → BLOCKING"
             exit 1
           fi
+
+      - name: Prepare AI Fix Input
+        run: |
+          awk -F '\t' 'NR>1 {
+            print "FILE: " $3 "\nLINE: " $4 "\nISSUE: " $1 "\nCODE: " $5 "\n---"
+          }' reports/code.tsv > reports/fix-input.txt
 
 # =========================
 # 🔹 7. PR COMMENT (REAL-TIME)
