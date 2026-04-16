@@ -363,7 +363,7 @@ jobs:
       - name: Download Scan Report
         uses: actions/download-artifact@v4
         with:
-          name: scan-report
+          name: code-report
           path: reports
   
       - name: Run AI Fix Script (Generate New Files)
