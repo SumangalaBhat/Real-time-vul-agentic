@@ -462,8 +462,8 @@ jobs:
   
       - name: Commit AI Fix Files
         run: |
-          git config user.name "AI-Security-Bot"
-          git config user.email "ai@bot.com"
+          git config user.name "SumangalaBhat"
+          git config user.email "sumangala.bhat18@gmail.com"
   
           git add ai-fixes/
   
