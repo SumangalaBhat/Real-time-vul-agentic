@@ -346,7 +346,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: code-before
+          name: code-report
           path: reports
 
       - name: Apply AI Fixes
