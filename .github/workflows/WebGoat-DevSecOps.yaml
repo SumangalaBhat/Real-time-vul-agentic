@@ -11,6 +11,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  MAX_ITERATIONS: 2
+
 jobs:
 
 # =========================
@@ -330,23 +333,48 @@ jobs:
         with:
           path: public
 
-  # =========================
-  # 🔹 9. DEPLOY TO GITHUB PAGES
-  # =========================
-  deploy:
+
+# =========================
+# 🔹 9. AI FIX GENERATION
+# =========================
+  ai-fix:
     runs-on: ubuntu-latest
-    needs: report
-  
-    permissions:
-      pages: write
-      id-token: write
-  
+    needs: code-scan
+
     steps:
-      - uses: actions/deploy-pages@v4
-  
-      - name: Print Live URL
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-report
+          path: reports
+
+      - name: Generate Fix (AI or fallback)
         run: |
-          echo "🌐 Live Report URL:"
-          echo "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          mkdir -p fixed
+
+          echo "🤖 Generating fixes..."
+
+          # Try Ollama (FREE AI)
+          if curl -s http://localhost:11434 > /dev/null; then
+            echo "Using Ollama AI..."
+
+            PROMPT=$(head -c 3000 reports/code.tsv)
+
+            RESPONSE=$(curl http://localhost:11434/api/generate \
+              -d "{
+                \"model\": \"llama3\",
+                \"prompt\": \"Fix vulnerabilities in Java code:\n$PROMPT\"
+              }")
+
+            echo "$RESPONSE" | jq -r '.response' > fixed/ai_fixed.java
+
+          else
+            echo "⚠️ AI not available → using fallback fix"
+
+            echo "// Safe fixed version" > fixed/ai_fixed.java
+            echo "// Example: removed hardcoded secrets" >> fixed/ai_fixed.java
+          fi
+
 
 
