@@ -335,7 +335,7 @@ jobs:
 
 
 # =========================
-# 🔹 9. AI FIX GENERATION
+# 🔹 3. AI FIX (OPENAI)
 # =========================
   ai-fix:
     runs-on: ubuntu-latest
@@ -346,35 +346,40 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: code-report
+          name: code-before
           path: reports
 
-      - name: Generate Fix (AI or fallback)
+      - name: Apply AI Fixes
         run: |
-          mkdir -p fixed
+          echo "🤖 Applying AI fixes..."
 
-          echo "🤖 Generating fixes..."
+          while IFS=$'\t' read -r RULE SEV FILE LINE CODE; do
 
-          # Try Ollama (FREE AI)
-          if curl -s http://localhost:11434 > /dev/null; then
-            echo "Using Ollama AI..."
+            [ "$RULE" = "RULE" ] && continue
 
-            PROMPT=$(head -c 3000 reports/code.tsv)
+            echo "Fixing $FILE"
 
-            RESPONSE=$(curl http://localhost:11434/api/generate \
+            PROMPT="Fix this Java security issue:\n$CODE"
+
+            RESPONSE=$(curl https://api.openai.com/v1/chat/completions \
+              -H "Authorization: Bearer $OPENAI_API_KEY" \
+              -H "Content-Type: application/json" \
               -d "{
-                \"model\": \"llama3\",
-                \"prompt\": \"Fix vulnerabilities in Java code:\n$PROMPT\"
+                \"model\": \"gpt-4o-mini\",
+                \"messages\": [
+                  {\"role\": \"system\", \"content\": \"Fix Java vulnerabilities safely.\"},
+                  {\"role\": \"user\", \"content\": \"$PROMPT\"}
+                ]
               }")
 
-            echo "$RESPONSE" | jq -r '.response' > fixed/ai_fixed.java
+            FIX=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
 
-          else
-            echo "⚠️ AI not available → using fallback fix"
+            sed -i "${LINE}s/.*/$FIX/" "$FILE" || true
 
-            echo "// Safe fixed version" > fixed/ai_fixed.java
-            echo "// Example: removed hardcoded secrets" >> fixed/ai_fixed.java
-          fi
+          done < reports/code.tsv
+
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
 
 
