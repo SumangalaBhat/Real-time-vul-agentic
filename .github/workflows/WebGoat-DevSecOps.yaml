@@ -56,39 +56,41 @@ jobs:
 # =========================
   code-scan:
     runs-on: ubuntu-latest
-    needs: changes
+    needs: [changes, build]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Scan Changed Files
+      - name: Scan Changed Files (FIXED)
         run: |
           mkdir -p reports
-
+      
           echo -e "RULE\tSEVERITY\tFILE\tLINE\tCODE" > reports/code.tsv
-
-          for file in ${{ needs.changes.outputs.files }}; do
+      
+          echo "${{ needs.changes.outputs.files }}" | while IFS= read -r file; do
+            [ -z "$file" ] && continue
             [ ! -f "$file" ] && continue
-
-            grep -nE "password|secret|token|exec\(|SELECT .* \+" "$file" | while read line; do
-              
+      
+            grep -nE "password|secret|token|exec\(|SELECT .* \+" "$file" | while IFS= read -r line; do
+      
               LINE_NO=$(echo "$line" | cut -d: -f1)
               CODE=$(echo "$line" | cut -d: -f2-)
-
+      
               if echo "$CODE" | grep -qiE "password\s*=|secret\s*="; then
                 RULE="Hardcoded Secret"; SEV="HIGH"
-
+      
               elif echo "$CODE" | grep -qi "exec("; then
                 RULE="Command Injection"; SEV="HIGH"
-
+      
               elif echo "$CODE" | grep -qi "SELECT .* \+"; then
                 RULE="SQL Injection"; SEV="MEDIUM"
-
+      
               else
                 RULE="Code Smell"; SEV="LOW"
               fi
-
+      
               echo -e "$RULE\t$SEV\t$file\t$LINE_NO\t$CODE"
+      
             done
           done >> reports/code.tsv || true
 
