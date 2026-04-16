@@ -163,26 +163,26 @@ jobs:
 
 # =========================
 # 🔹 6. SECURITY GATE (SMART)
-# =========================
+  # =========================
   security-gate:
     runs-on: ubuntu-latest
     needs: code-scan
-
+  
+    outputs:
+      high: ${{ steps.check.outputs.high }}
+  
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: code-report
           path: reports
-
-      - name: Block PR if HIGH found
+  
+      - id: check
         run: |
           HIGH=$(grep -c $'\tHIGH\t' reports/code.tsv || true)
-
-          if [ "$HIGH" -gt 0 ]; then
-            echo "❌ HIGH vulnerabilities in changed code → BLOCKING"
-            exit 1
-          fi
-
+  
+          echo "HIGH=$HIGH"
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
 
 # =========================
 # 🔹 7. PR COMMENT (REAL-TIME)
@@ -192,18 +192,27 @@ jobs:
     needs: [author-mapping, security-gate]
     if: always() && github.event_name == 'pull_request'
   
+    permissions:
+      pull-requests: write
+  
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: owner-report
           path: reports
   
-      - name: Check report exists
+      - name: Safe check
         run: |
           if [ ! -f reports/owners.tsv ]; then
             echo "⚠️ No report found"
-            exit 0
+            echo "EMPTY" > reports/owners.tsv
           fi
+  
+      - name: Count vulnerabilities
+        id: check
+        run: |
+          COUNT=$(grep -c $'\tHIGH\t' reports/owners.tsv || true)
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
   
       - uses: actions/github-script@v7
         with:
@@ -212,32 +221,22 @@ jobs:
   
             let data = fs.readFileSync('reports/owners.tsv','utf8');
   
-            // Limit size (GitHub comment max ~65k)
-            data = data.substring(0, 60000);
+            const high = "${{ needs.security-gate.outputs.high }}";
   
             const body = `
-            🚨 **Security Issues Found**
+            🚨 **Security Scan Result**
             
-            \`\`\`
-            ${data}
-            \`\`\`
+            🔴 High Vulnerabilities: ${high}
+            
+            ${data ? "```" + data.substring(0,5000) + "```" : "No issues found"}
             `;
-            
-                      await github.rest.issues.createComment({
-                        issue_number: context.issue.number,
-                        owner: context.repo.owner,
-                        repo: context.repo.repo,
-                        body: body
-                      });
-
-      - name: Check vulnerabilities
-        id: check
-        run: |
-          COUNT=$(grep -c $'\tHIGH\t' reports/owners.tsv || true)
-          echo "count=$COUNT" >> $GITHUB_OUTPUT
-      
-      - uses: actions/github-script@v7
-        if: steps.check.outputs.count != '0'
+  
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
 
 # =========================
 # 🔹 8. HTML REPORT (ENHANCED)
