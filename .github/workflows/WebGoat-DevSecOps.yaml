@@ -464,11 +464,23 @@ jobs:
         run: |
           git config user.name "SumangalaBhat"
           git config user.email "sumangala.bhat18@gmail.com"
-  
+      
+          # Ensure directory exists
+          mkdir -p ai-fixes
+      
+          echo "Checking generated files..."
+          ls -R ai-fixes || true
+      
+          # Check if folder has files
+          if [ -z "$(find ai-fixes -type f 2>/dev/null)" ]; then
+            echo "⚠️ No AI fix files generated. Skipping commit."
+            exit 0
+          fi
+      
           git add ai-fixes/
-  
+      
           git commit -m "AI generated secure versions of vulnerable files" || echo "No changes"
-  
+      
           git push origin $FIX_BRANCH
 
 
