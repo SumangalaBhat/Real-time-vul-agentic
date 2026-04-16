@@ -482,6 +482,111 @@ jobs:
           git commit -m "AI generated secure versions of vulnerable files" || echo "No changes"
       
           git push origin $FIX_BRANCH
+# -------------------------------
+# 3. CREATE PR
+# -------------------------------
+  create_pr:
+    runs-on: ubuntu-latest
+    needs: ai_fix
+
+    steps:
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: ${{ env.FIX_BRANCH }}
+          title: "🤖 AI Security Fixes"
+          body: "Auto-remediated vulnerabilities using AI"
+
+# -------------------------------
+# 4. RESCAN FIXED CODE
+# -------------------------------
+  rescan:
+    runs-on: ubuntu-latest
+    needs: create_pr
+
+    outputs:
+      remaining: ${{ steps.check.outputs.remaining }}
+
+    steps:
+      - name: Checkout Fix Branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FIX_BRANCH }}
+
+      - name: Run Trivy Again
+        run: |
+          ./bin/trivy fs . -f json -o after-report.json
+
+      - name: Count Remaining Issues
+        id: check
+        run: |
+          REMAIN=$(jq '[.Results[].Vulnerabilities[]?] | length' after-report.json)
+          echo "remaining=$REMAIN" >> $GITHUB_OUTPUT
+
+      - name: Upload After Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: after-scan
+          path: after-report.json
+
+# -------------------------------
+# 5. BLOCK / ALLOW MERGE
+# -------------------------------
+  enforce_policy:
+    runs-on: ubuntu-latest
+    needs: rescan
+
+    steps:
+      - name: Fail if vulnerabilities remain
+        run: |
+          if [ "${{ needs.rescan.outputs.remaining }}" != "0" ]; then
+            echo "❌ Vulnerabilities still exist. Blocking merge."
+            exit 1
+          else
+            echo "✅ No vulnerabilities. Safe to merge."
+          fi
+
+# -------------------------------
+# 6. REPORT COMPARISON
+# -------------------------------
+  report-html:
+    runs-on: ubuntu-latest
+    needs: [code-scan, rescan]
+
+    steps:
+      - name: Download Before
+        uses: actions/download-artifact@v4
+        with:
+          name: code-report
+          path: before
+
+      - name: Download After
+        uses: actions/download-artifact@v4
+        with:
+          name: code-report
+          path: after
+
+      - name: Generate Comparison Report
+        run: |
+          BEFORE=$(jq '[.Results[].Vulnerabilities[]?] | length' before/trivy-report.json)
+          AFTER=$(jq '[.Results[].Vulnerabilities[]?] | length' after/after-report.json)
+
+          cat <<EOF > report.html
+          <html>
+          <h1>AI Security Fix Report</h1>
+          <table border="1">
+          <tr><th>Stage</th><th>Vulnerabilities</th></tr>
+          <tr><td>Before</td><td>$BEFORE</td></tr>
+          <tr><td>After</td><td>$AFTER</td></tr>
+          </table>
+          </html>
+          EOF
+
+      - name: Upload Final Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-report
+          path: report.html
 
 
 
