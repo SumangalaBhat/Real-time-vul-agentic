@@ -197,6 +197,49 @@ jobs:
           name: code-report
           path: reports/code.tsv
 
+      - name: Vulnerability Summary Report
+        run: |
+          echo "📊 Generating Vulnerability Summary..."
+      
+          if [ ! -f reports/code.tsv ]; then
+            echo "❌ code.tsv not found"
+            exit 1
+          fi
+      
+          echo "---- RAW REPORT ----"
+          cat reports/code.tsv || true
+      
+          # 🔢 Count by severity
+          CRITICAL=$(grep -c $'\tCRITICAL\t' reports/code.tsv || true)
+          HIGH=$(grep -c $'\tHIGH\t' reports/code.tsv || true)
+          MEDIUM=$(grep -c $'\tMEDIUM\t' reports/code.tsv || true)
+          LOW=$(grep -c $'\tLOW\t' reports/code.tsv || true)
+      
+          TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW))
+      
+          echo ""
+          echo "🚨 Vulnerability Summary"
+          echo "--------------------------------"
+          echo "CRITICAL : $CRITICAL"
+          echo "HIGH     : $HIGH"
+          echo "MEDIUM   : $MEDIUM"
+          echo "LOW      : $LOW"
+          echo "--------------------------------"
+          echo "TOTAL    : $TOTAL"
+      
+          # 📊 Append to GitHub Summary UI
+          {
+            echo "## 🚨 DevSecOps Vulnerability Summary"
+            echo ""
+            echo "| Severity | Count |"
+            echo "|----------|--------|"
+            echo "| 🔴 CRITICAL | $CRITICAL |"
+            echo "| 🟠 HIGH     | $HIGH |"
+            echo "| 🟡 MEDIUM   | $MEDIUM |"
+            echo "| 🟢 LOW      | $LOW |"
+            echo "| **TOTAL**  | **$TOTAL** |"
+          } >> $GITHUB_STEP_SUMMARY
+
 # =========================
 # 🔹 4. DEPENDENCY SCAN
 # =========================
