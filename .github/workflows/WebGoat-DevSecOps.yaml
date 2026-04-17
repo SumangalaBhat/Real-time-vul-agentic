@@ -137,7 +137,7 @@ jobs:
                 ISSUE_COUNT=$((ISSUE_COUNT+1))
               done
         
-            done >> reports/report.tsv
+            done >> reports/code.tsv
         
             echo "📊 Scan completed"
             echo "Files scanned: $FILE_COUNT"
@@ -146,8 +146,52 @@ jobs:
             # 🔥 FORCE visibility if empty
             if [ "$ISSUE_COUNT" -eq 0 ]; then
               echo "No issues found — adding debug marker"
-              echo -e "INFO\tLOW\tN/A\t0\tNo vulnerabilities detected" >> reports/report.tsv
+              echo -e "INFO\tLOW\tN/A\t0\tNo vulnerabilities detected" >> reports/code.tsv
             fi
+
+      - name: Real Vulnerability Scan (DEBUG VERSION)
+        run: |
+          mkdir -p reports
+          echo -e "RULE\tSEVERITY\tFILE\tLINE\tCODE" > reports/report.tsv
+      
+          FILE_COUNT=0
+          ISSUE_COUNT=0
+      
+          echo "🔍 Scanning ALL files..."
+      
+          for file in $(find . -type f); do
+            FILE_COUNT=$((FILE_COUNT+1))
+      
+            # Skip binaries safely
+            if file "$file" | grep -qi "binary"; then
+              continue
+            fi
+      
+            # 🔥 VERY SIMPLE TEST (to prove scan works)
+            if grep -q "password" "$file"; then
+              echo -e "Hardcoded Secret\tHIGH\t$file\t1\tFound password" >> reports/report.tsv
+              ISSUE_COUNT=$((ISSUE_COUNT+1))
+            fi
+      
+            if grep -q "SELECT" "$file"; then
+              echo -e "SQL Injection Risk\tHIGH\t$file\t1\tFound SQL" >> reports/report.tsv
+              ISSUE_COUNT=$((ISSUE_COUNT+1))
+            fi
+      
+            if grep -q "AKIA" "$file"; then
+              echo -e "AWS Key Exposure\tCRITICAL\t$file\t1\tFound AWS Key" >> reports/report.tsv
+              ISSUE_COUNT=$((ISSUE_COUNT+1))
+            fi
+      
+          done
+      
+          echo "📊 Files scanned: $FILE_COUNT"
+          echo "🚨 Issues found: $ISSUE_COUNT"
+      
+          if [ "$ISSUE_COUNT" -eq 0 ]; then
+            echo "❌ STILL ZERO → SCAN IS NOT WORKING"
+            echo "👉 Add test vulnerability manually"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: code-report
