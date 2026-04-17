@@ -60,54 +60,90 @@ jobs:
 # =========================
   code-scan:
     runs-on: ubuntu-latest
-    needs: [changes, build]
-
+    needs: build
+  
     steps:
       - uses: actions/checkout@v4
-
-      - name: Scan Changed Files (FIXED)
+  
+      - name: Full Repo Secret & Vulnerability Scan
         run: |
           mkdir -p reports
-      
+  
           echo -e "RULE\tSEVERITY\tFILE\tLINE\tCODE" > reports/code.tsv
+  
+          # 🔍 Scan entire repo (excluding .git & binaries)
+          find . -type f \
+            -not -path "./.git/*" \
+            -not -path "./node_modules/*" \
+            -not -path "./target/*" \
+            -size -1M \
+          | while read -r file; do
+  
+            # Skip non-text files
+            if file "$file" | grep -q "binary"; then
+              continue
+            fi
+  
+            # 🔎 Search for sensitive patterns
+          grep -nE '.' "$file" 2>/dev/null | while IFS= read -r line; do
       
-          echo "${{ needs.changes.outputs.files }}" | while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            [ ! -f "$file" ] && continue
-      
-            grep -nE "password|secret|token|exec\(|SELECT .* \+" "$file" | while IFS= read -r line; do
-      
-              LINE_NO=$(echo "$line" | cut -d: -f1)
-              CODE=$(echo "$line" | cut -d: -f2-)
-      
-              if echo "$CODE" | grep -qiE "password\s*=|secret\s*="; then
-                RULE="Hardcoded Secret"; SEV="HIGH"
-      
-              elif echo "$CODE" | grep -qi "exec("; then
-                RULE="Command Injection"; SEV="HIGH"
-      
-              elif echo "$CODE" | grep -qi "SELECT .* \+"; then
-                RULE="SQL Injection"; SEV="MEDIUM"
-      
-              else
-                RULE="Code Smell"; SEV="LOW"
-              fi
-      
-              echo -e "$RULE\t$SEV\t$file\t$LINE_NO\t$CODE"
-      
-            done
+          LINE_NO=$(echo "$line" | cut -d: -f1)
+          CODE=$(echo "$line" | cut -d: -f2-)
+        
+          SEV=""
+          RULE=""
+        
+          # 🔐 1. Detect structured secrets (keys, tokens, long strings)
+          if echo "$CODE" | grep -Eq '["'\''][A-Za-z0-9+/=_-]{20,}["'\'']'; then
+            RULE="Hardcoded Credential (Generic)"
+            SEV="HIGH"
+          fi
+        
+          # 🔐 2. High entropy detection (random-looking secrets)
+          SECRET=$(echo "$CODE" | grep -Eo '[A-Za-z0-9+/=]{20,}' | head -n1)
+        
+          if [ -n "$SECRET" ]; then
+            ENTROPY=$(echo "$SECRET" | fold -w1 | sort | uniq -c | awk '{
+              p=$1/length("'"$SECRET"'"); 
+              e+=-p*log(p)/log(2)
+            } END {print e}')
+        
+            # Threshold ~4.0 → likely secret
+            if awk "BEGIN {exit !($ENTROPY > 4.0)}"; then
+              RULE="High Entropy Secret"
+              SEV="HIGH"
+            fi
+          fi
+        
+          # 🔐 3. Private key / certificate detection
+          if echo "$CODE" | grep -q "BEGIN .*PRIVATE KEY"; then
+            RULE="Private Key Exposure"
+            SEV="CRITICAL"
+          fi
+        
+          # 🔐 4. Suspicious assignment patterns (generic, not keyword-based)
+          if echo "$CODE" | grep -Eq '=\s*["'\''][^"'\'']{12,}["'\'']'; then
+            [ -z "$RULE" ] && RULE="Suspicious Hardcoded Value" && SEV="MEDIUM"
+          fi
+        
+          # 🔐 5. Command / SQL risks (keep these)
+          if echo "$CODE" | grep -q "exec("; then
+            RULE="Command Injection"
+            SEV="HIGH"
+          fi
+        
+          if echo "$CODE" | grep -qE "SELECT .* \+"; then
+            RULE="SQL Injection"
+            SEV="MEDIUM"
+          fi
+        
+          # ✅ Only print if something detected
+          if [ -n "$RULE" ]; then
+            echo -e "$RULE\t$SEV\t$file\t$LINE_NO\t$CODE"
+          fi
+        
+          done
           done >> reports/code.tsv || true
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: code-report
-          path: reports/code.tsv
-
-      - name: Prepare AI Fix Input
-        run: |
-          awk -F '\t' 'NR>1 {
-            print "FILE: " $3 "\nLINE: " $4 "\nISSUE: " $1 "\nCODE: " $5 "\n---"
-          }' reports/code.tsv > reports/fix-input.txt
 
 # =========================
 # 🔹 4. DEPENDENCY SCAN
