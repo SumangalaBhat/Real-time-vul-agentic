@@ -334,31 +334,18 @@ jobs:
         with:
           path: public
 
-
-# -------------------------------
-# 2. AI AUTO FIX (GENERATE NEW FILES)
-# -------------------------------
-  ai_fix:
+# =========================
+# 🔹 9. Agentic-pipeline
+# =========================
+  ai-agentic-pipeline:
     runs-on: ubuntu-latest
     needs: code-scan
-   # if: needs.scan.outputs.vuln_count != '0'
+  
+    env:
+      MAX_ITERATIONS: 2
   
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-  
-      - name: Create Fix Branch
-        run: |
-          git checkout -b $FIX_BRANCH
-  
-      - name: Install Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.11
-  
-      - name: Install Dependencies
-        run: |
-          pip install requests jq
+      - uses: actions/checkout@v4
   
       - name: Download Scan Report
         uses: actions/download-artifact@v4
@@ -366,227 +353,13 @@ jobs:
           name: code-report
           path: reports
   
-      - name: Run AI Fix Script (Generate New Files)
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - name: Setup
         run: |
-          cat << 'EOF' > ai_fix.py
-          import os, json, requests
-  
-          REPORT_FILE = "reports/trivy-report.json"
-          OUTPUT_DIR = "ai-fixes"
-  
-          os.makedirs(OUTPUT_DIR, exist_ok=True)
-  
-          with open(REPORT_FILE) as f:
-              data = json.load(f)
-  
-          issues = []
-          for r in data.get("Results", []):
-              target = r.get("Target")
-              for v in r.get("Vulnerabilities", []):
-                  issues.append({
-                      "file": target,
-                      "severity": v.get("Severity"),
-                      "title": v.get("Title")
-                  })
-  
-          processed = set()
-          mapping = []
-  
-          for issue in issues[:10]:  # limit
-              file_path = issue["file"]
-  
-              # skip duplicates or non-existing files
-              if not os.path.exists(file_path) or file_path in processed:
-                  continue
-  
-              processed.add(file_path)
-  
-              with open(file_path, "r", errors="ignore") as f:
-                  code = f.read()
-  
-              prompt = f"""
-                You are a secure coding assistant.
-                
-                Fix the following vulnerability:
-                {issue['title']}
-                Severity: {issue['severity']}
-                
-                Instructions:
-                - Do NOT change functionality
-                - Improve security
-                - Return FULL fixed code
-                - No explanations
-                
-                Code:
-                {code}
-                """
-                
-                            response = requests.post(
-                                "https://api.openai.com/v1/responses",
-                                headers={
-                                    "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-                                    "Content-Type": "application/json"
-                                },
-                                json={
-                                    "model": "gpt-4.1-mini",
-                                    "input": prompt
-                                }
-                            )
-                
-                            try:
-                                fixed_code = response.json()["output"][0]["content"][0]["text"]
-                            except:
-                                print(f"Failed to fix {file_path}")
-                                continue
-                
-                            # create new file path
-                            new_file_path = os.path.join(OUTPUT_DIR, file_path)
-                
-                            os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
-                
-                            with open(new_file_path, "w") as f:
-                                f.write(fixed_code)
-                
-                            mapping.append(f"{file_path} -> {new_file_path}")
-                
-                        # write mapping report
-                        with open(f"{OUTPUT_DIR}/mapping.txt", "w") as f:
-                            f.write("\n".join(mapping))
-                
-                        print("AI fixes generated in:", OUTPUT_DIR)
-                        EOF
-                
-                        python ai_fix.py
-  
-      - name: Commit AI Fix Files
-        run: |
-          git config user.name "SumangalaBhat"
-          git config user.email "sumangala.bhat18@gmail.com"
-      
-          # Ensure directory exists
-          mkdir -p ai-fixes
-      
-          echo "Checking generated files..."
-          ls -R ai-fixes || true
-      
-          # Check if folder has files
-          if [ -z "$(find ai-fixes -type f 2>/dev/null)" ]; then
-            echo "⚠️ No AI fix files generated. Skipping commit."
-            exit 0
-          fi
-      
-          git add ai-fixes/
-      
-          git commit -m "AI generated secure versions of vulnerable files" || echo "No changes"
-      
-          git push origin $FIX_BRANCH
-# -------------------------------
-# 3. CREATE PR
-# -------------------------------
-  create_pr:
-    runs-on: ubuntu-latest
-    needs: ai_fix
+          mkdir -p ai-fixes reports/iterations
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip jq
+          pip3 install requests
 
-    steps:
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: ${{ env.FIX_BRANCH }}
-          title: "🤖 AI Security Fixes"
-          body: "Auto-remediated vulnerabilities using AI"
-
-# -------------------------------
-# 4. RESCAN FIXED CODE
-# -------------------------------
-  rescan:
-    runs-on: ubuntu-latest
-    needs: create_pr
-
-    outputs:
-      remaining: ${{ steps.check.outputs.remaining }}
-
-    steps:
-      - name: Checkout Fix Branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FIX_BRANCH }}
-
-      - name: Run Trivy Again
-        run: |
-          ./bin/trivy fs . -f json -o after-report.json
-
-      - name: Count Remaining Issues
-        id: check
-        run: |
-          REMAIN=$(jq '[.Results[].Vulnerabilities[]?] | length' after-report.json)
-          echo "remaining=$REMAIN" >> $GITHUB_OUTPUT
-
-      - name: Upload After Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: after-scan
-          path: after-report.json
-
-# -------------------------------
-# 5. BLOCK / ALLOW MERGE
-# -------------------------------
-  enforce_policy:
-    runs-on: ubuntu-latest
-    needs: rescan
-
-    steps:
-      - name: Fail if vulnerabilities remain
-        run: |
-          if [ "${{ needs.rescan.outputs.remaining }}" != "0" ]; then
-            echo "❌ Vulnerabilities still exist. Blocking merge."
-            exit 1
-          else
-            echo "✅ No vulnerabilities. Safe to merge."
-          fi
-
-# -------------------------------
-# 6. REPORT COMPARISON
-# -------------------------------
-  report-html:
-    runs-on: ubuntu-latest
-    needs: [code-scan, rescan]
-
-    steps:
-      - name: Download Before
-        uses: actions/download-artifact@v4
-        with:
-          name: code-report
-          path: before
-
-      - name: Download After
-        uses: actions/download-artifact@v4
-        with:
-          name: code-report
-          path: after
-
-      - name: Generate Comparison Report
-        run: |
-          BEFORE=$(jq '[.Results[].Vulnerabilities[]?] | length' before/trivy-report.json)
-          AFTER=$(jq '[.Results[].Vulnerabilities[]?] | length' after/after-report.json)
-
-          cat <<EOF > report.html
-          <html>
-          <h1>AI Security Fix Report</h1>
-          <table border="1">
-          <tr><th>Stage</th><th>Vulnerabilities</th></tr>
-          <tr><td>Before</td><td>$BEFORE</td></tr>
-          <tr><td>After</td><td>$AFTER</td></tr>
-          </table>
-          </html>
-          EOF
-
-      - name: Upload Final Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: final-report
-          path: report.html
 
 
 
