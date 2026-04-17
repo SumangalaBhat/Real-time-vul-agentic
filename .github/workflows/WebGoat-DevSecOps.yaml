@@ -197,23 +197,31 @@ jobs:
           name: code-report
           path: reports/code.tsv
 
-      - name: Vulnerability Summary Report
+      - name: Print Complete Vulnerability Report
         run: |
-          echo "📊 Generating Vulnerability Summary..."
+          echo "📊 ========= FULL VULNERABILITY REPORT ========="
       
-          if [ ! -f reports/code.tsv ]; then
-            echo "❌ code.tsv not found"
+          if [ ! -f reports/report.tsv ]; then
+            echo "❌ ERROR: report.tsv not found"
             exit 1
           fi
       
-          echo "---- RAW REPORT ----"
-          cat reports/code.tsv || true
+          echo ""
+          echo "📄 RAW DATA:"
+          echo "---------------------------------------------"
+          cat reports/report.tsv || true
       
-          # 🔢 Count by severity
-          CRITICAL=$(grep -c $'\tCRITICAL\t' reports/code.tsv || true)
-          HIGH=$(grep -c $'\tHIGH\t' reports/code.tsv || true)
-          MEDIUM=$(grep -c $'\tMEDIUM\t' reports/code.tsv || true)
-          LOW=$(grep -c $'\tLOW\t' reports/code.tsv || true)
+          echo ""
+          echo "📊 SUMMARY:"
+          echo "---------------------------------------------"
+      
+          # Remove header for counting
+          DATA=$(tail -n +2 reports/report.tsv)
+      
+          CRITICAL=$(echo "$DATA" | grep -c $'\tCRITICAL\t' || true)
+          HIGH=$(echo "$DATA" | grep -c $'\tHIGH\t' || true)
+          MEDIUM=$(echo "$DATA" | grep -c $'\tMEDIUM\t' || true)
+          LOW=$(echo "$DATA" | grep -c $'\tLOW\t' || true)
       
           TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW))
       
@@ -227,7 +235,22 @@ jobs:
           echo "--------------------------------"
           echo "TOTAL    : $TOTAL"
       
-          # 📊 Append to GitHub Summary UI
+          echo ""
+          echo "📌 RULE-WISE BREAKDOWN"
+          echo "--------------------------------"
+          echo "$DATA" | cut -f1 | sort | uniq -c | sort -nr || true
+      
+          echo ""
+          echo "📂 FILE-WISE DISTRIBUTION"
+          echo "--------------------------------"
+          echo "$DATA" | cut -f3 | sort | uniq -c | sort -nr || true
+      
+          echo ""
+          echo "🔎 TOP 10 ISSUES"
+          echo "--------------------------------"
+          echo "$DATA" | head -10 || true
+      
+          # ✅ GitHub Summary UI
           {
             echo "## 🚨 DevSecOps Vulnerability Summary"
             echo ""
