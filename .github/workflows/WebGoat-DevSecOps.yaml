@@ -362,5 +362,71 @@ jobs:
 
 
 
+    # =========================
+    # 🔁 ITERATIVE AGENT LOOP
+    # =========================
+      - name: Run Agent Loop
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 << 'EOF'
+          import os, requests, json, shutil
+  
+          API_KEY = os.getenv("OPENAI_API_KEY")
+          MAX_ITER = int(os.getenv("MAX_ITERATIONS", 2))
+  
+          def call_ai(system, user):
+              url = "https://api.openai.com/v1/chat/completions"
+              headers = {
+                  "Authorization": f"Bearer {API_KEY},
+                  "Content-Type": "application/json"
+              }
+              data = {
+                  "model": "gpt-4o-mini",
+                  "temperature": 0.2,
+                  "messages": [
+                      {"role": "system", "content": system},
+                      {"role": "user", "content": user}
+                  ]
+              }
+              res = requests.post(url, headers=headers, json=data)
+              return res.json()["choices"][0]["message"]["content"]
+  
+          def parse_tsv():
+              issues = []
+              with open("reports/code.tsv") as f:
+                  next(f)
+                  for line in f:
+                      parts = line.strip().split("\t")
+                      if len(parts) < 5:
+                          continue
+                      issues.append({
+                          "rule": parts[0],
+                          "severity": parts[1],
+                          "file": parts[2],
+                          "line": parts[3],
+                          "code": parts[4]
+                      })
+              return issues
+  
+          for iteration in range(MAX_ITER):
+              print(f"🔁 Iteration {iteration+1}")
+  
+              issues = parse_tsv()
+              if not issues:
+                  print("✅ No vulnerabilities left")
+                  break
+  
+              for issue in issues:
+                  file_path = issue["file"]
+  
+                  if not os.path.exists(file_path):
+                      continue
+  
+                  with open(file_path) as f:
+                    code = f.read()
+
+
+
 
 
