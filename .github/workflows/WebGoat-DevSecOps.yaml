@@ -164,7 +164,6 @@ jobs:
         with:
           name: owner-report
           path: reports/owners.tsv
-
 # =========================
 # 🔹 6. SECURITY GATE (SMART)
   # =========================
@@ -255,6 +254,11 @@ jobs:
         with:
           name: owner-report
           path: reports
+          
+      - name: Debug Reports Folder
+        run: |
+          echo "📂 Listing reports folder"
+          ls -R reports || true
   
       - name: Calculate Severity Counts
         run: |
@@ -270,35 +274,35 @@ jobs:
         run: |
           mkdir -p public
       
-              cat <<EOF > public/index.html
-              <html>
-              <head>
-                <title>🚀 DevSecOps Report</title>
-                <style>
-                  body { font-family: Arial; text-align: center; }
-                  h1 { color: #333; }
-                  .card { padding:20px; margin:10px; display:inline-block; border-radius:10px; width:150px; }
-                  .high { background:red; color:white; }
-                  .medium { background:orange; color:black; }
-                  .low { background:green; color:white; }
-      
-                  table { border-collapse: collapse; margin:20px auto; width:90%; }
-                  th, td { border:1px solid #ddd; padding:8px; }
-                  th { background:#333; color:white; }
-                </style>
-              </head>
-              <body>
+          cat <<EOF > public/index.html
+          <html>
+          <head>
+            <title>🚀 DevSecOps Report</title>
+            <style>
+              body { font-family: Arial; text-align: center; }
+              h1 { color: #333; }
+              .card { padding:20px; margin:10px; display:inline-block; border-radius:10px; width:150px; }
+              .high { background:red; color:white; }
+              .medium { background:orange; color:black; }
+              .low { background:green; color:white; }
           
-                  <h1>🚀 WebGoat Security Report</h1>
+              table { border-collapse: collapse; margin:20px auto; width:90%; }
+              th, td { border:1px solid #ddd; padding:8px; }
+              th { background:#333; color:white; }
+            </style>
+          </head>
+          <body>
           
-                  <div class="card high">HIGH: $HIGH</div>
-                  <div class="card medium">MEDIUM: $MEDIUM</div>
-                  <div class="card low">LOW: $LOW</div>
+          <h1>🚀 WebGoat Security Report</h1>
           
-                  <h2>🔴 HIGH Vulnerabilities</h2>
-                  <table>
-                  <tr><th>Rule</th><th>File</th><th>Line</th><th>Author</th><th>Commit</th></tr>
-                  EOF
+          <div class="card high">HIGH: $HIGH</div>
+          <div class="card medium">MEDIUM: $MEDIUM</div>
+          <div class="card low">LOW: $LOW</div>
+          
+          <h2>🔴 HIGH Vulnerabilities</h2>
+          <table>
+          <tr><th>Rule</th><th>File</th><th>Line</th><th>Author</th><th>Commit</th></tr>
+          EOF
           
                   awk -F '\t' '$2=="HIGH" {
                     printf "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n",$1,$3,$4,$5,$6
@@ -334,142 +338,7 @@ jobs:
         with:
           path: public
 
-# =========================
-# 🔹 9. Agentic-pipeline
-# =========================
-  ai-agentic-pipeline:
-    runs-on: ubuntu-latest
-    needs: code-scan
-  
-    env:
-      MAX_ITERATIONS: 2
-  
-    steps:
-      - uses: actions/checkout@v4
-  
-      - name: Download Scan Report
-        uses: actions/download-artifact@v4
-        with:
-          name: code-report
-          path: reports
-  
-      - name: Setup
-        run: |
-          mkdir -p ai-fixes reports/iterations
-          sudo apt-get update
-          sudo apt-get install -y python3 python3-pip jq
-          pip3 install requests
 
-
-
-    # =========================
-    # 🔁 ITERATIVE AGENT LOOP
-    # =========================
-      - name: Run Agent Loop
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python3 << 'EOF'
-          import os, requests, json
-      
-          API_KEY = os.getenv("OPENAI_API_KEY")
-          MAX_ITER = int(os.getenv("MAX_ITERATIONS", 2))
-      
-          if not API_KEY:
-              raise Exception("❌ OPENAI_API_KEY not set")
-      
-          def call_ai(system, user):
-              url = "https://api.openai.com/v1/chat/completions"
-              headers = {
-                  "Authorization": "Bearer " + API_KEY,
-                  "Content-Type": "application/json"
-              }
-              data = {
-                  "model": "gpt-4o-mini",
-                  "temperature": 0.2,
-                  "messages": [
-                      {"role": "system", "content": system},
-                      {"role": "user", "content": user}
-                  ]
-              }
-      
-              res = requests.post(url, headers=headers, json=data)
-      
-              if res.status_code != 200:
-                  print("❌ API Error:", res.text)
-                  return ""
-      
-              return res.json()["choices"][0]["message"]["content"]
-      
-          def parse_tsv():
-              issues = []
-              with open("reports/code.tsv") as f:
-                  next(f)
-                  for line in f:
-                      parts = line.strip().split("\t")
-                      if len(parts) < 5:
-                          continue
-                      issues.append({
-                          "rule": parts[0],
-                          "severity": parts[1],
-                          "file": parts[2],
-                          "line": parts[3],
-                          "code": parts[4]
-                      })
-              return issues
-      
-          os.makedirs("ai-fixes", exist_ok=True)
-      
-          for iteration in range(MAX_ITER):
-              print(f"🔁 Iteration {iteration+1}")
-      
-              issues = parse_tsv()
-              if not issues:
-                  print("✅ No vulnerabilities left")
-                  break
-      
-              for issue in issues:
-                  file_path = issue["file"]
-      
-                  if not os.path.exists(file_path):
-                      continue
-      
-                  with open(file_path) as f:
-                      code = f.read()
-      
-                  prompt = f"""
-          Fix this vulnerability.
-          
-          Issue: {issue['rule']}
-          Line: {issue['code']}
-          
-          Code:
-          {code}
-          
-          Rules:
-          - Fix securely
-          - Do not break functionality
-          - Return ONLY code
-          """
-      
-                  fixed_code = call_ai(
-                      "You are a secure coding expert.",
-                      prompt
-                  )
-      
-                  if not fixed_code:
-                      continue
-      
-                  output_path = f"ai-fixes/{file_path}.iter{iteration+1}.fixed"
-                  os.makedirs(os.path.dirname(output_path), exist_ok=True)
-      
-                  with open(output_path, "w") as out:
-                      out.write(fixed_code)
-      
-                  print(f"✅ Fixed: {file_path}")
-      
-          print("AI Fixing Completed")
-          EOF
 
 
 
