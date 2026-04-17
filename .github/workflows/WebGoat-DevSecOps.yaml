@@ -13,7 +13,7 @@ permissions:
 
 env:
   MAX_ITERATIONS: 2
-  FIX_BRANCH: ai-auto-fix-${{ github.run_id }}
+  #FIX_BRANCH: ai-auto-fix-${{ github.run_id }}
 
 jobs:
 
