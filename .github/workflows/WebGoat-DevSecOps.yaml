@@ -370,11 +370,14 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python3 << 'EOF'
-          import os, requests, json, shutil
-  
+          import os, requests, json
+      
           API_KEY = os.getenv("OPENAI_API_KEY")
           MAX_ITER = int(os.getenv("MAX_ITERATIONS", 2))
-  
+      
+          if not API_KEY:
+              raise Exception("❌ OPENAI_API_KEY not set")
+      
           def call_ai(system, user):
               url = "https://api.openai.com/v1/chat/completions"
               headers = {
@@ -389,9 +392,15 @@ jobs:
                       {"role": "user", "content": user}
                   ]
               }
+      
               res = requests.post(url, headers=headers, json=data)
+      
+              if res.status_code != 200:
+                  print("❌ API Error:", res.text)
+                  return ""
+      
               return res.json()["choices"][0]["message"]["content"]
-  
+      
           def parse_tsv():
               issues = []
               with open("reports/code.tsv") as f:
@@ -408,23 +417,59 @@ jobs:
                           "code": parts[4]
                       })
               return issues
-  
+      
+          os.makedirs("ai-fixes", exist_ok=True)
+      
           for iteration in range(MAX_ITER):
               print(f"🔁 Iteration {iteration+1}")
-  
+      
               issues = parse_tsv()
               if not issues:
                   print("✅ No vulnerabilities left")
                   break
-  
+      
               for issue in issues:
                   file_path = issue["file"]
-  
+      
                   if not os.path.exists(file_path):
                       continue
-  
+      
                   with open(file_path) as f:
-                    code = f.read()
+                      code = f.read()
+      
+                  prompt = f"""
+          Fix this vulnerability.
+          
+          Issue: {issue['rule']}
+          Line: {issue['code']}
+          
+          Code:
+          {code}
+          
+          Rules:
+          - Fix securely
+          - Do not break functionality
+          - Return ONLY code
+          """
+      
+                  fixed_code = call_ai(
+                      "You are a secure coding expert.",
+                      prompt
+                  )
+      
+                  if not fixed_code:
+                      continue
+      
+                  output_path = f"ai-fixes/{file_path}.iter{iteration+1}.fixed"
+                  os.makedirs(os.path.dirname(output_path), exist_ok=True)
+      
+                  with open(output_path, "w") as out:
+                      out.write(fixed_code)
+      
+                  print(f"✅ Fixed: {file_path}")
+      
+          print("AI Fixing Completed")
+          EOF
 
 
 
