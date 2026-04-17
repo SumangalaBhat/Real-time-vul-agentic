@@ -65,86 +65,89 @@ jobs:
     steps:
       - uses: actions/checkout@v4
   
-      - name: Full Repo Secret & Vulnerability Scan
+      - name: Advanced Real-Time Vulnerability Scan (FIXED)
         run: |
-          mkdir -p reports
-  
-          echo -e "RULE\tSEVERITY\tFILE\tLINE\tCODE" > reports/code.tsv
-  
-          # 🔍 Scan entire repo (excluding .git & binaries)
-          find . -type f \
-            -not -path "./.git/*" \
-            -not -path "./node_modules/*" \
-            -not -path "./target/*" \
-            -size -1M \
-          | while read -r file; do
-  
-            # Skip non-text files
-            if file "$file" | grep -q "binary"; then
-              continue
+            mkdir -p reports
+        
+            echo -e "RULE\tSEVERITY\tFILE\tLINE\tCODE" > reports/report.tsv
+        
+            FILE_COUNT=0
+            ISSUE_COUNT=0
+        
+            echo "🔍 Starting scan..."
+        
+            find . -type f \
+              -not -path "./.git/*" \
+              -not -path "./node_modules/*" \
+              -not -path "./target/*" \
+            | while read -r file; do
+        
+              FILE_COUNT=$((FILE_COUNT+1))
+        
+              # Skip binaries
+              if file "$file" | grep -qi "binary"; then
+                continue
+              fi
+        
+              # 🔥 DIRECT PATTERN SCAN (more aggressive)
+              grep -nEi \
+              "password|secret|token|key|auth|credential|exec\(|eval\(|SELECT .* \+|BEGIN .*PRIVATE KEY|AKIA[0-9A-Z]{16}|https?://.*:.*@" \
+              "$file" 2>/dev/null | while IFS= read -r line; do
+        
+                LINE_NO=$(echo "$line" | cut -d: -f1)
+                CODE=$(echo "$line" | cut -d: -f2-)
+        
+                RULE="Sensitive Data Exposure"
+                SEV="MEDIUM"
+        
+                # 🔐 classify better
+                if echo "$CODE" | grep -qi "BEGIN .*PRIVATE KEY"; then
+                  RULE="Private Key Exposure"; SEV="CRITICAL"
+        
+                elif echo "$CODE" | grep -qiE "AKIA[0-9A-Z]{16}"; then
+                  RULE="AWS Key Exposure"; SEV="CRITICAL"
+        
+                elif echo "$CODE" | grep -qiE "password|secret|token"; then
+                  RULE="Hardcoded Secret"; SEV="HIGH"
+        
+                elif echo "$CODE" | grep -qi "exec("; then
+                  RULE="Command Injection"; SEV="HIGH"
+        
+                elif echo "$CODE" | grep -qiE "SELECT .* \+"; then
+                  RULE="SQL Injection"; SEV="HIGH"
+        
+                elif echo "$CODE" | grep -qiE "eval\("; then
+                  RULE="Unsafe Code Execution"; SEV="HIGH"
+        
+                elif echo "$CODE" | grep -qiE "https?://.*:.*@"; then
+                  RULE="Credential in URL"; SEV="HIGH"
+                fi
+        
+                echo -e "$RULE\t$SEV\t$file\t$LINE_NO\t$CODE"
+                ISSUE_COUNT=$((ISSUE_COUNT+1))
+        
+              done
+        
+              # 🔐 ENTROPY CHECK (relaxed)
+              grep -nE '[A-Za-z0-9+/=]{16,}' "$file" 2>/dev/null | while IFS= read -r line; do
+                LINE_NO=$(echo "$line" | cut -d: -f1)
+                CODE=$(echo "$line" | cut -d: -f2-)
+        
+                echo -e "Possible Secret (Entropy)\tHIGH\t$file\t$LINE_NO\t$CODE"
+                ISSUE_COUNT=$((ISSUE_COUNT+1))
+              done
+        
+            done >> reports/report.tsv
+        
+            echo "📊 Scan completed"
+            echo "Files scanned: $FILE_COUNT"
+            echo "Issues found: $ISSUE_COUNT"
+        
+            # 🔥 FORCE visibility if empty
+            if [ "$ISSUE_COUNT" -eq 0 ]; then
+              echo "No issues found — adding debug marker"
+              echo -e "INFO\tLOW\tN/A\t0\tNo vulnerabilities detected" >> reports/report.tsv
             fi
-  
-            # 🔎 Search for sensitive patterns
-          grep -nE '.' "$file" 2>/dev/null | while IFS= read -r line; do
-      
-          LINE_NO=$(echo "$line" | cut -d: -f1)
-          CODE=$(echo "$line" | cut -d: -f2-)
-        
-          SEV=""
-          RULE=""
-        
-          # 🔐 1. Detect structured secrets (keys, tokens, long strings)
-          if echo "$CODE" | grep -Eq '["'\''][A-Za-z0-9+/=_-]{20,}["'\'']'; then
-            RULE="Hardcoded Credential (Generic)"
-            SEV="HIGH"
-          fi
-        
-          # 🔐 2. High entropy detection (random-looking secrets)
-          SECRET=$(echo "$CODE" | grep -Eo '[A-Za-z0-9+/=]{20,}' | head -n1)
-        
-          if [ -n "$SECRET" ]; then
-            ENTROPY=$(echo "$SECRET" | fold -w1 | sort | uniq -c | awk '{
-              p=$1/length("'"$SECRET"'"); 
-              e+=-p*log(p)/log(2)
-            } END {print e}')
-        
-            # Threshold ~4.0 → likely secret
-            if awk "BEGIN {exit !($ENTROPY > 4.0)}"; then
-              RULE="High Entropy Secret"
-              SEV="HIGH"
-            fi
-          fi
-        
-          # 🔐 3. Private key / certificate detection
-          if echo "$CODE" | grep -q "BEGIN .*PRIVATE KEY"; then
-            RULE="Private Key Exposure"
-            SEV="CRITICAL"
-          fi
-        
-          # 🔐 4. Suspicious assignment patterns (generic, not keyword-based)
-          if echo "$CODE" | grep -Eq '=\s*["'\''][^"'\'']{12,}["'\'']'; then
-            [ -z "$RULE" ] && RULE="Suspicious Hardcoded Value" && SEV="MEDIUM"
-          fi
-        
-          # 🔐 5. Command / SQL risks (keep these)
-          if echo "$CODE" | grep -q "exec("; then
-            RULE="Command Injection"
-            SEV="HIGH"
-          fi
-        
-          if echo "$CODE" | grep -qE "SELECT .* \+"; then
-            RULE="SQL Injection"
-            SEV="MEDIUM"
-          fi
-        
-          # ✅ Only print if something detected
-          if [ -n "$RULE" ]; then
-            echo -e "$RULE\t$SEV\t$file\t$LINE_NO\t$CODE"
-          fi
-        
-          done
-          done >> reports/code.tsv || true
-
       - uses: actions/upload-artifact@v4
         with:
           name: code-report
