@@ -1,0 +1,155 @@
+name: WebGoat DevSecOps + AI Fix Pipeline
+
+on:
+  push:
+  pull_request:
+
+env:
+  REPORT_DIR: reports
+
+jobs:
+
+# =========================
+# 🔹 1. Checkout
+# =========================
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.files.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get changed files
+        id: files
+        run: |
+          echo "list=$(git ls-files)" >> $GITHUB_OUTPUT
+
+# =========================
+# 🔹 2. GitGuardian (Secrets)
+# =========================
+  gitguardian-scan:
+    runs-on: ubuntu-latest
+    needs: setup
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GitGuardian Scan
+        uses: GitGuardian/ggshield-action@v1
+        env:
+          GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
+
+# =========================
+# 🔹 3. Semgrep (Code Vulns)
+# =========================
+  semgrep-scan:
+    runs-on: ubuntu-latest
+    needs: setup
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Run Semgrep
+        run: |
+          mkdir -p $REPORT_DIR
+          semgrep --config=auto --json > $REPORT_DIR/semgrep.json
+
+# =========================
+# 🔹 4. Dependency Scan
+# =========================
+  dependency-check:
+    runs-on: ubuntu-latest
+    needs: setup
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "WebGoat"
+          path: "."
+          format: "JSON"
+          out: "reports"
+
+# =========================
+# 🔹 5. Aggregate Summary
+# =========================
+  summary:
+    runs-on: ubuntu-latest
+    needs: [semgrep-scan, dependency-check]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Aggregate Results
+        run: |
+          mkdir -p reports
+
+          echo "🚨 Vulnerability Summary" > reports/summary.txt
+          echo "--------------------------------" >> reports/summary.txt
+
+          CRITICAL=$(jq '[.results[] | select(.extra.severity=="ERROR")] | length' reports/semgrep.json)
+          HIGH=$(jq '[.results[] | select(.extra.severity=="WARNING")] | length' reports/semgrep.json)
+
+          echo "CRITICAL : $CRITICAL" >> reports/summary.txt
+          echo "HIGH     : $HIGH" >> reports/summary.txt
+          echo "--------------------------------" >> reports/summary.txt
+
+          cat reports/summary.txt
+
+# =========================
+# 🔹 6. Ollama AI Fix Agent
+# =========================
+  ai-fix:
+    runs-on: ubuntu-latest
+    needs: semgrep-scan
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama pull llama3
+
+      - name: AI Fix Vulnerabilities
+        run: |
+          mkdir -p ai-fixes
+
+          for file in $(jq -r '.results[].path' reports/semgrep.json | sort -u); do
+            echo "Fixing $file"
+
+            CODE=$(cat $file)
+
+            RESPONSE=$(ollama run llama3 "
+            Fix security vulnerabilities in this code and return ONLY fixed code:
+
+            $CODE
+            ")
+
+            echo "$RESPONSE" > ai-fixes/$file
+          done
+
+# =========================
+# 🔹 7. Compare Before/After
+# =========================
+  compare:
+    runs-on: ubuntu-latest
+    needs: ai-fix
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare Results
+        run: |
+          echo "🔍 Before vs After Fix Summary"
+
+          BEFORE=$(jq '.results | length' reports/semgrep.json)
+
+          echo "Before Fix: $BEFORE vulnerabilities"
+
+          echo "After Fix: (re-run scan on ai-fixes if needed)"
