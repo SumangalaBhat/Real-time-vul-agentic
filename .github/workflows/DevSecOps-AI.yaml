@@ -127,6 +127,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: semgrep
 
+    permissions:
+        contents: write
+        pull-requests: write
+
+    env:
+      FIX_BRANCH: ai-fix-${{ github.run_id }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -134,6 +141,8 @@ jobs:
         with:
           name: semgrep-report
           path: reports
+
+
 
       - name: Install & Start Ollama
         run: |
@@ -152,27 +161,108 @@ jobs:
         run: |
           curl http://localhost:11434 || (echo "Ollama failed to start" && exit 1)
 
-      - name: AI Fix Vulnerabilities
+    #  - name: AI Fix Vulnerabilities
+     #   run: |
+      #    mkdir -p ai-fixes
+      
+       #   FILES=$(jq -r '.results[].path' reports/semgrep.json | sort -u)
+      
+       #   for file in $FILES; do
+        #    if [ -f "$file" ]; then
+         #     echo "Fixing $file"
+      
+           #   FIXED=$(ollama run llama3 "
+           #   Fix all security vulnerabilities (SQLi, XSS, etc).
+           #   Return only fixed code.
+              
+            #  $(cat $file)
+             # ")
+              
+                  #    mkdir -p $(dirname ai-fixes/$file)
+                    #  echo "$FIXED" > ai-fixes/$file
+                  #  fi
+                 # done
+    # =========================
+    # 🔹 Create Branch
+    # =========================
+      - name: Create Fix Branch
         run: |
-          mkdir -p ai-fixes
-      
-          FILES=$(jq -r '.results[].path' reports/semgrep.json | sort -u)
-      
-          for file in $FILES; do
-            if [ -f "$file" ]; then
-              echo "Fixing $file"
-      
-              FIXED=$(ollama run llama3 "
-              Fix all security vulnerabilities (SQLi, XSS, etc).
-              Return only fixed code.
-              
-              $(cat $file)
-              ")
-              
-                      mkdir -p $(dirname ai-fixes/$file)
-                      echo "$FIXED" > ai-fixes/$file
-                    fi
-                  done
+          git checkout -b $FIX_BRANCH
+
+    # =========================
+    # 🔹 Fix ONE Critical Issue
+    # =========================
+      - name: AI Fix (Create Duplicate File)
+        run: |
+          echo "🔍 Selecting one CRITICAL vulnerability..."
+  
+          VULN=$(jq -c '.results[] | select(.extra.severity=="ERROR")' reports/semgrep.json | head -n 1)
+  
+          if [ -z "$VULN" ]; then
+            echo "No CRITICAL vulnerabilities found"
+            exit 0
+          fi
+  
+          FILE=$(echo $VULN | jq -r '.path')
+          START=$(echo $VULN | jq '.start.line')
+          END=$(echo $VULN | jq '.end.line')
+  
+          echo "File: $FILE ($START-$END)"
+  
+          SNIPPET=$(sed -n "${START},${END}p" $FILE)
+          
+                  FIXED=$(ollama run llama3:8b "
+          Fix this CRITICAL vulnerability securely.
+          
+          Return ONLY fixed code.
+          
+          $SNIPPET
+          ")
+          
+                  # 🔥 Create duplicate file instead of overwrite
+                  NEW_FILE="${FILE%.java}_fixed.java"
+  
+          echo "Creating fixed file: $NEW_FILE"
+  
+          awk -v start=$START -v end=$END -v fix="$FIXED" '
+          NR==start {print fix}
+          NR<start || NR>end {print}
+          ' $FILE > $NEW_FILE
+
+    # =========================
+    # 🔹 Commit & Push
+    # =========================
+      - name: Commit Changes
+        run: |
+          git config user.name "ai-fix-bot"
+          git config user.email "bot@users.noreply.github.com"
+  
+          git add .
+          git commit -m "🤖 AI Fix: Added secure version of vulnerable file"
+  
+      - name: Push Branch
+        run: |
+          git push origin $FIX_BRANCH
+
+    # =========================
+    # 🔹 Create PR
+    # =========================
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: $FIX_BRANCH
+          title: "🤖 AI Security Fix (Duplicate File)"
+          body: |
+            ## 🚨 AI Generated Fix
+  
+            - Fixed one CRITICAL vulnerability
+            - Original file unchanged
+            - Secure version added as new file
+  
+            ### 📂 Changes
+            - Added *_fixed.java file
+  
+            ⚠️ Please review before merging
 
 # =========================
 # 🔹 7. RE-SCAN AFTER FIX
