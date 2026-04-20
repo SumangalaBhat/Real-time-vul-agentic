@@ -279,15 +279,18 @@ jobs:
     # =========================
       - name: Commit Changes
         run: |
-          git config user.name "ai-fix-bot"
-          git config user.email "bot@users.noreply.github.com"
-  
+          git config user.name "sumangalabhat"
+          git config user.email "sumangala.bhat18@gmail.com"
+    
           git add .
-          git commit -m "🤖 AI Fix: Added secure version of vulnerable file"
-  
+    
+          # Use FILE, START, END variables for descriptive commit message
+          git commit -m "🤖 AI Fix: $FILE lines $START-$END patched by Ollama AI Agent"  -m "Original vulnerable code replaced with secure version."
+    
       - name: Push Branch
         run: |
           git push origin $FIX_BRANCH
+
 
     # =========================
     # 🔹 Create PR
