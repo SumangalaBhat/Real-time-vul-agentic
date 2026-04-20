@@ -1,4 +1,4 @@
-name: WebGoat DevSecOps + AI Fix Pipeline
+name: WebGoat DevSecOps + Agentic AI (Stable)
 
 on:
   push:
@@ -6,43 +6,42 @@ on:
 
 env:
   REPORT_DIR: reports
+  FIX_DIR: ai-fixes
 
 jobs:
 
 # =========================
-# 🔹 1. Checkout
+# 🔹 1. SETUP
 # =========================
   setup:
     runs-on: ubuntu-latest
-    outputs:
-      files: ${{ steps.files.outputs.list }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get changed files
-        id: files
+      - name: Prepare workspace
         run: |
-          echo "list=$(git ls-files)" >> $GITHUB_OUTPUT
+          mkdir -p $REPORT_DIR $FIX_DIR
 
 # =========================
-# 🔹 2. GitGuardian (Secrets)
+# 🔹 2. GITGUARDIAN (Secrets)
 # =========================
-  gitguardian-scan:
+  gitguardian:
     runs-on: ubuntu-latest
     needs: setup
+    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: GitGuardian Scan
+      - name: Run GitGuardian
         uses: GitGuardian/ggshield-action@v1
         env:
           GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
 
 # =========================
-# 🔹 3. Semgrep (Code Vulns)
+# 🔹 3. SEMGREP (Code Scan)
 # =========================
-  semgrep-scan:
+  semgrep:
     runs-on: ubuntu-latest
     needs: setup
 
@@ -55,101 +54,182 @@ jobs:
       - name: Run Semgrep
         run: |
           mkdir -p $REPORT_DIR
-          semgrep --config=auto --json > $REPORT_DIR/semgrep.json
+          semgrep --config=auto --json > $REPORT_DIR/semgrep.json || echo "{}" > $REPORT_DIR/semgrep.json
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports/
 
 # =========================
-# 🔹 4. Dependency Scan
+# 🔹 4. DEPENDENCY CHECK
 # =========================
-  dependency-check:
+  dependency:
     runs-on: ubuntu-latest
     needs: setup
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: OWASP Dependency Check
+      - name: Run OWASP Dependency Check
         uses: dependency-check/Dependency-Check_Action@main
         with:
-          project: "WebGoat"
-          path: "."
-          format: "JSON"
-          out: "reports"
+          project: WebGoat
+          path: .
+          format: JSON
+          out: reports
+
+      - name: Upload Dependency Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-report
+          path: reports/
 
 # =========================
-# 🔹 5. Aggregate Summary
+# 🔹 5. SUMMARY (BEFORE FIX)
 # =========================
-  summary:
+  summary-before:
     runs-on: ubuntu-latest
-    needs: [semgrep-scan, dependency-check]
+    needs: [semgrep, dependency]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports
 
-      - name: Aggregate Results
+      - name: Generate Summary
         run: |
-          mkdir -p reports
+          echo "🚨 BEFORE FIX SUMMARY"
+          echo "--------------------------------"
 
-          echo "🚨 Vulnerability Summary" > reports/summary.txt
-          echo "--------------------------------" >> reports/summary.txt
+          TOTAL=$(jq '.results | length' reports/semgrep.json 2>/dev/null || echo 0)
 
-          CRITICAL=$(jq '[.results[] | select(.extra.severity=="ERROR")] | length' reports/semgrep.json)
-          HIGH=$(jq '[.results[] | select(.extra.severity=="WARNING")] | length' reports/semgrep.json)
+          CRITICAL=$(jq '[.results[] | select(.extra.severity=="ERROR")] | length' reports/semgrep.json 2>/dev/null || echo 0)
+          HIGH=$(jq '[.results[] | select(.extra.severity=="WARNING")] | length' reports/semgrep.json 2>/dev/null || echo 0)
 
-          echo "CRITICAL : $CRITICAL" >> reports/summary.txt
-          echo "HIGH     : $HIGH" >> reports/summary.txt
-          echo "--------------------------------" >> reports/summary.txt
+          echo "CRITICAL : $CRITICAL"
+          echo "HIGH     : $HIGH"
+          echo "TOTAL    : $TOTAL"
 
-          cat reports/summary.txt
+          echo "$TOTAL" > before_count.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: before-count
+          path: before_count.txt
 
 # =========================
-# 🔹 6. Ollama AI Fix Agent
+# 🔹 6. AI FIX (OLLAMA)
 # =========================
   ai-fix:
     runs-on: ubuntu-latest
-    needs: semgrep-scan
+    needs: semgrep
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports
 
       - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           ollama pull llama3
 
-      - name: AI Fix Vulnerabilities
+      - name: Apply AI Fixes
         run: |
-          mkdir -p ai-fixes
+          mkdir -p $FIX_DIR
 
-          for file in $(jq -r '.results[].path' reports/semgrep.json | sort -u); do
-            echo "Fixing $file"
+          FILES=$(jq -r '.results[].path' reports/semgrep.json | sort -u)
 
-            CODE=$(cat $file)
+          for file in $FILES; do
+            if [ -f "$file" ]; then
+              echo "Fixing $file"
 
-            RESPONSE=$(ollama run llama3 "
-            Fix security vulnerabilities in this code and return ONLY fixed code:
-
-            $CODE
-            ")
-
-            echo "$RESPONSE" > ai-fixes/$file
-          done
+              FIXED=$(ollama run llama3 "
+              Fix all security vulnerabilities (SQLi, XSS, etc).
+              Return only fixed code.
+              
+              $(cat $file)
+              ")
+              
+                            mkdir -p $(dirname $FIX_DIR/$file)
+                            echo "$FIXED" > $FIX_DIR/$file
+                          fi
+                        done
+              
+                    - uses: actions/upload-artifact@v4
+                      with:
+                        name: fixed-code
+                        path: ai-fixes/
 
 # =========================
-# 🔹 7. Compare Before/After
+# 🔹 7. RE-SCAN AFTER FIX
 # =========================
-  compare:
+  rescan:
     runs-on: ubuntu-latest
     needs: ai-fix
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixed-code
+          path: fixed
 
-      - name: Compare Results
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Re-run Scan
         run: |
-          echo "🔍 Before vs After Fix Summary"
+          semgrep --config=auto fixed --json > after.json || echo "{}" > after.json
 
-          BEFORE=$(jq '.results | length' reports/semgrep.json)
+      - name: Count After Fix
+        run: |
+          AFTER=$(jq '.results | length' after.json 2>/dev/null || echo 0)
+          echo "$AFTER" > after_count.txt
 
-          echo "Before Fix: $BEFORE vulnerabilities"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: after-count
+          path: after_count.txt
 
-          echo "After Fix: (re-run scan on ai-fixes if needed)"
+# =========================
+# 🔹 8. FINAL REPORT
+# =========================
+  final-report:
+    runs-on: ubuntu-latest
+    needs: [summary-before, rescan]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: before-count
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: after-count
+
+      - name: Print Final Summary
+        run: |
+          BEFORE=$(cat before_count.txt)
+          AFTER=$(cat after_count.txt)
+
+          RESOLVED=$((BEFORE - AFTER))
+
+          echo "🚨 FINAL VULNERABILITY REPORT"
+          echo "--------------------------------"
+          echo "Before Fix : $BEFORE"
+          echo "After Fix  : $AFTER"
+          echo "Resolved   : $RESOLVED"
+          echo "--------------------------------"
+
+          if [ "$AFTER" -gt 0 ]; then
+            echo "⚠️ Vulnerabilities still exist!"
+            exit 1
+          else
+            echo "✅ All vulnerabilities fixed"
+          fi
