@@ -135,21 +135,33 @@ jobs:
           name: semgrep-report
           path: reports
 
-      - name: Install Ollama
+      - name: Install & Start Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
+      
+          # Start Ollama in background
+          nohup ollama serve > ollama.log 2>&1 &
+      
+          # Wait for server to be ready
+          sleep 10
+      
+          # Pull model
           ollama pull llama3
 
-      - name: Apply AI Fixes
+      - name: Verify Ollama is running
         run: |
-          mkdir -p $FIX_DIR
+          curl http://localhost:11434 || (echo "Ollama failed to start" && exit 1)
 
+      - name: AI Fix Vulnerabilities
+        run: |
+          mkdir -p ai-fixes
+      
           FILES=$(jq -r '.results[].path' reports/semgrep.json | sort -u)
-
+      
           for file in $FILES; do
             if [ -f "$file" ]; then
               echo "Fixing $file"
-
+      
               FIXED=$(ollama run llama3 "
               Fix all security vulnerabilities (SQLi, XSS, etc).
               Return only fixed code.
@@ -157,15 +169,10 @@ jobs:
               $(cat $file)
               ")
               
-                            mkdir -p $(dirname $FIX_DIR/$file)
-                            echo "$FIXED" > $FIX_DIR/$file
-                          fi
-                        done
-              
-                    - uses: actions/upload-artifact@v4
-                      with:
-                        name: fixed-code
-                        path: ai-fixes/
+                      mkdir -p $(dirname ai-fixes/$file)
+                      echo "$FIXED" > ai-fixes/$file
+                    fi
+                  done
 
 # =========================
 # 🔹 7. RE-SCAN AFTER FIX
