@@ -192,43 +192,88 @@ jobs:
     # =========================
     # 🔹 Fix ONE Critical Issue
     # =========================
-      - name: AI Fix (Create Duplicate File)
-        run: |
-          echo "🔍 Selecting one CRITICAL vulnerability..."
-  
-          VULN=$(jq -c '.results[] | select(.extra.severity=="ERROR")' reports/semgrep.json | head -n 1)
-  
-          if [ -z "$VULN" ]; then
-            echo "No CRITICAL vulnerabilities found"
-            exit 0
-          fi
-  
-          FILE=$(echo $VULN | jq -r '.path')
-          START=$(echo $VULN | jq '.start.line')
-          END=$(echo $VULN | jq '.end.line')
-  
-          echo "File: $FILE ($START-$END)"
-  
-          SNIPPET=$(sed -n "${START},${END}p" $FILE)
-          
-                  FIXED=$(ollama run llama3:8b "
-          Fix this CRITICAL vulnerability securely.
-          
-          Return ONLY fixed code.
-          
-          $SNIPPET
-          ")
-          
-                  # 🔥 Create duplicate file instead of overwrite
-                  NEW_FILE="${FILE%.java}_fixed.java"
-  
-          echo "Creating fixed file: $NEW_FILE"
-  
-          awk -v start=$START -v end=$END -v fix="$FIXED" '
-          NR==start {print fix}
-          NR<start || NR>end {print}
-          ' $FILE > $NEW_FILE
+- name: AI Fix (Create Duplicate File)
+  run: |
+    set -e
 
+    mkdir -p ai-fixes
+
+    echo "🔍 Selecting one CRITICAL vulnerability..."
+
+    # ✅ Safe jq (no broken pipe)
+    VULN=$(jq -c '[.results[] | select(.extra.severity=="ERROR")][0]' reports/semgrep.json)
+
+    # ✅ Handle no vulnerability case
+    if [ "$VULN" = "null" ] || [ -z "$VULN" ]; then
+      echo "✅ No CRITICAL vulnerabilities found"
+      exit 0
+    fi
+
+    FILE=$(echo "$VULN" | jq -r '.path')
+    START=$(echo "$VULN" | jq -r '.start.line')
+    END=$(echo "$VULN" | jq -r '.end.line')
+
+    echo "📄 File: $FILE"
+    echo "📍 Lines: $START - $END"
+
+    # ✅ Validate file exists
+    if [ ! -f "$FILE" ]; then
+      echo "❌ File not found: $FILE"
+      exit 1
+    fi
+
+    # ✅ Extract snippet safely
+    SNIPPET=$(sed -n "${START},${END}p" "$FILE")
+
+    if [ -z "$SNIPPET" ]; then
+      echo "❌ Empty snippet, skipping"
+      exit 1
+    fi
+
+    echo "⚠️ Vulnerable Code:"
+    echo "$SNIPPET"
+
+    echo "🤖 Fixing with Ollama..."
+
+    FIXED=$(ollama run llama3:8b "
+Fix this CRITICAL security vulnerability in Java code.
+
+Requirements:
+- Prevent SQL Injection / XSS / insecure patterns
+- Keep logic intact
+- Return ONLY fixed code snippet
+
+Code:
+$SNIPPET
+")
+
+    if [ -z "$FIXED" ]; then
+      echo "❌ AI did not return a fix"
+      exit 1
+    fi
+
+    # ✅ Store inside ai-fixes directory (consistent)
+    NEW_FILE="ai-fixes/${FILE%.java}_fixed.java"
+
+    mkdir -p "$(dirname "$NEW_FILE")"
+
+    echo "📝 Creating fixed file: $NEW_FILE"
+
+    awk -v start="$START" -v end="$END" -v fix="$FIXED" '
+      NR==start {print fix}
+      NR<start || NR>end {print}
+    ' "$FILE" > "$NEW_FILE"
+
+    echo "✅ Fixed file created successfully"
+
+    echo "📂 Files in ai-fixes:"
+    ls -R ai-fixes
+
+    - name: Upload Fixed Code
+      uses: actions/upload-artifact@v4
+      with:
+        name: fixed-code
+        path: ai-fixes/
     # =========================
     # 🔹 Commit & Push
     # =========================
