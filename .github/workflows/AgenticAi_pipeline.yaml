@@ -157,14 +157,14 @@ jobs:
 
       # 🔹 Prepare Commit
       - name: Prepare Changes
-        if: env.skip_pr != 'true'
         run: |
           echo ".env" >> .gitignore
           echo "reports/" >> .gitignore
           echo "ollama.log" >> .gitignore
-
-          git add ai-fixes/ .env .gitignore
-
+      
+          # ❌ DO NOT add .env
+          git add ai-fixes/ .gitignore
+      
           if git diff --cached --quiet; then
             echo "skip_pr=true" >> $GITHUB_ENV
           fi
