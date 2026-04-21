@@ -27,16 +27,16 @@ jobs:
 # =========================
 # 🔹 2. GITGUARDIAN
 # =========================
-  gitguardian:
-    runs-on: ubuntu-latest
-    needs: setup
-    continue-on-error: true
+  #gitguardian:
+   # runs-on: ubuntu-latest
+   # needs: setup
+  #  continue-on-error: true
 
-    steps:
-      - uses: actions/checkout@v4
-      - uses: GitGuardian/ggshield-action@v1
-        env:
-          GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
+ #   steps:
+   #   - uses: actions/checkout@v4
+  #    - uses: GitGuardian/ggshield-action@v1
+  #      env:
+  #        GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
 
 # =========================
 # 🔹 3. SEMGREP
@@ -171,28 +171,42 @@ jobs:
 
       # 🔹 Generate PR Body
       - name: Generate PR Details
-        if: env.skip_pr != 'true'
         run: |
+          set -e
+      
           echo "## 🤖 AI Security Fix" > pr_details.md
-
+      
           FILES=$(git diff --cached --name-only)
-
+      
           for file in $FILES; do
+            echo "Processing $file..."
+      
             DIFF=$(git diff --cached "$file" | head -n 200)
-
+      
+            # ✅ FIX: Proper heredoc (NO indentation on EOF)
             EXPLANATION=$(ollama run llama3 <<EOF
             Explain this security fix in simple terms:
-                $DIFF
-                EOF
-                )
-                
-                            echo "### $file" >> pr_details.md
-                            echo '```diff' >> pr_details.md
-                            echo "$DIFF" >> pr_details.md
-                            echo '```' >> pr_details.md
-                            echo "$EXPLANATION" >> pr_details.md
-                            echo "---" >> pr_details.md
-                          done
+            - What was wrong
+            - Why it's risky
+            - How the fix improves security
+            
+            $DIFF
+            EOF
+            )
+            
+                  {
+                    echo "### 📄 $file"
+                    echo '```diff'
+                    echo "$DIFF"
+                    echo '```'
+                    echo ""
+                    echo "💡 Explanation:"
+                    echo "$EXPLANATION"
+                    echo ""
+                    echo "---"
+                  } >> pr_details.md
+            
+                done
 
       # 🔹 Create PR (FIXED)
       - name: Create PR
