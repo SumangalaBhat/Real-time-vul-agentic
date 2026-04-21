@@ -181,18 +181,18 @@ jobs:
             DIFF=$(git diff --cached "$file" | head -n 200)
 
             EXPLANATION=$(ollama run llama3 <<EOF
-Explain this security fix in simple terms:
-$DIFF
-EOF
-)
-
-            echo "### $file" >> pr_details.md
-            echo '```diff' >> pr_details.md
-            echo "$DIFF" >> pr_details.md
-            echo '```' >> pr_details.md
-            echo "$EXPLANATION" >> pr_details.md
-            echo "---" >> pr_details.md
-          done
+            Explain this security fix in simple terms:
+                $DIFF
+                EOF
+                )
+                
+                            echo "### $file" >> pr_details.md
+                            echo '```diff' >> pr_details.md
+                            echo "$DIFF" >> pr_details.md
+                            echo '```' >> pr_details.md
+                            echo "$EXPLANATION" >> pr_details.md
+                            echo "---" >> pr_details.md
+                          done
 
       # 🔹 Create PR (FIXED)
       - name: Create PR
