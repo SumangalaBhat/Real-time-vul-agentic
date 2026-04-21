@@ -279,8 +279,8 @@ jobs:
     # =========================
       - name: Commit AI Fix Changes
         run: |
-          git config user.name "ai-fix-bot"
-          git config user.email "bot@users.noreply.github.com"
+          git config user.name "SumangalaBhat"
+          git config user.email "Sumangala.bhat18@gmail.com"
       
           echo "🔍 Checking target file..."
       
