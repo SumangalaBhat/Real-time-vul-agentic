@@ -282,36 +282,47 @@ jobs:
           git config user.name "ai-fix-bot"
           git config user.email "bot@users.noreply.github.com"
       
-          # Stage only the modified file (safer than git add .)
-          git add "$FILE"
+          echo "🔍 Checking target file..."
       
-          echo "🔍 Detecting changes in $FILE..."
+          # If FILE is empty, detect changed files automatically
+          if [ -z "$FILE" ]; then
+            echo "⚠️ FILE variable is empty. Auto-detecting changed files..."
       
-          # Get unified diff of staged changes
-          DIFF_OUTPUT=$(git diff --cached -U5 "$FILE" || true)
+            FILE=$(git status --porcelain | awk '{print $2}' | head -n 1)
+          fi
+      
+          # If still empty → fallback to all changes
+          if [ -z "$FILE" ]; then
+            echo "⚠️ No specific file detected. Falling back to all changes."
+            git add .
+          else
+            echo "📄 Target file: $FILE"
+            git add "$FILE"
+          fi
+      
+          echo "🔍 Detecting changes..."
+      
+          DIFF_OUTPUT=$(git diff --cached -U5 || true)
       
           echo "$DIFF_OUTPUT" > diff_output.txt
       
           echo "📌 Changed lines (with context):"
           echo "$DIFF_OUTPUT"
       
-          # Extract line numbers (added/removed)
           LINE_INFO=$(echo "$DIFF_OUTPUT" | grep -E '^@@' || true)
       
           echo "📍 Line change summary:"
           echo "$LINE_INFO"
       
-          # Fallback if no diff found
+          # Skip if no changes
           if [ -z "$DIFF_OUTPUT" ]; then
             echo "⚠️ No changes detected, skipping commit."
             exit 0
           fi
       
-          # Trim diff for commit message (avoid overly large commits)
           SHORT_DIFF=$(echo "$DIFF_OUTPUT" | head -n 50)
       
-          # Commit with structured message
-          git commit -m "🤖 AI Fix (Ollama): $FILE updated" \
+          git commit -m "🤖 AI Fix (Ollama): ${FILE:-multiple files} updated" \
                      -m "📍 Changed regions:" \
                      -m "$LINE_INFO" \
                      -m "🛠️ AI Agent: Ollama" \
