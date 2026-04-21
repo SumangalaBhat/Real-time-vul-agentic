@@ -266,78 +266,78 @@ jobs:
 # =========================
 # 🔹 8. GITHUB PAGES REPORT
 # =========================
-pages:
-  runs-on: ubuntu-latest
-  needs: final-report
-
-  steps:
-    - name: Download Reports
-      uses: actions/download-artifact@v4
-      with:
-        name: before-count
-
-    - uses: actions/download-artifact@v4
-      with:
-        name: after-count
-
-    - uses: actions/download-artifact@v4
-      with:
-        name: semgrep-report
-        path: reports
+  pages:
+    runs-on: ubuntu-latest
+    needs: final-report
+  
+    steps:
+      - name: Download Reports
+        uses: actions/download-artifact@v4
+        with:
+          name: before-count
+  
+      - uses: actions/download-artifact@v4
+        with:
+          name: after-count
+  
+      - uses: actions/download-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports
 
     # =========================
     # 🔹 Generate HTML Dashboard
     # =========================
-    - name: Generate HTML Report
-      run: |
-        BEFORE=$(cat before_count.txt)
-        AFTER=$(cat after_count.txt)
-        RESOLVED=$((BEFORE - AFTER))
-
-        mkdir -p site
-
-        cat <<EOF > site/index.html
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>DevSecOps AI Report</title>
-          <style>
-            body { font-family: Arial; margin: 40px; background: #0f172a; color: #e2e8f0; }
-            h1 { color: #38bdf8; }
-            .card { background: #1e293b; padding: 20px; margin: 10px 0; border-radius: 10px; }
-            .good { color: #22c55e; }
-            .bad { color: #ef4444; }
-          </style>
-        </head>
-        <body>
-          <h1>🚀 DevSecOps AI Security Report</h1>
-
-          <div class="card">
-            <h2>📊 Summary</h2>
-            <p>Before Fix: <b class="bad">$BEFORE</b></p>
-            <p>After Fix: <b class="good">$AFTER</b></p>
-            <p>Resolved: <b>$RESOLVED</b></p>
-          </div>
-
-          <div class="card">
-            <h2>🤖 AI Fix</h2>
-            <p>Automated vulnerability remediation using Ollama</p>
-          </div>
-
-        </body>
-        </html>
-        EOF
+      - name: Generate HTML Report
+        run: |
+          BEFORE=$(cat before_count.txt)
+          AFTER=$(cat after_count.txt)
+          RESOLVED=$((BEFORE - AFTER))
+  
+          mkdir -p site
+  
+          cat <<EOF > site/index.html
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>DevSecOps AI Report</title>
+            <style>
+              body { font-family: Arial; margin: 40px; background: #0f172a; color: #e2e8f0; }
+              h1 { color: #38bdf8; }
+              .card { background: #1e293b; padding: 20px; margin: 10px 0; border-radius: 10px; }
+              .good { color: #22c55e; }
+              .bad { color: #ef4444; }
+            </style>
+          </head>
+          <body>
+            <h1>🚀 DevSecOps AI Security Report</h1>
+  
+            <div class="card">
+              <h2>📊 Summary</h2>
+              <p>Before Fix: <b class="bad">$BEFORE</b></p>
+              <p>After Fix: <b class="good">$AFTER</b></p>
+              <p>Resolved: <b>$RESOLVED</b></p>
+            </div>
+  
+            <div class="card">
+              <h2>🤖 AI Fix</h2>
+              <p>Automated vulnerability remediation using Ollama</p>
+            </div>
+  
+          </body>
+          </html>
+          EOF
 
     # =========================
     # 🔹 Upload Pages Artifact
     # =========================
-    - name: Upload Pages Artifact
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: site
-
-    # =========================
-    # 🔹 Deploy to GitHub Pages
-    # =========================
-    - name: Deploy to GitHub Pages
-      uses: actions/deploy-pages@v4
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  
+      # =========================
+      # 🔹 Deploy to GitHub Pages
+      # =========================
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
