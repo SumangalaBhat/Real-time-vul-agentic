@@ -78,146 +78,211 @@ jobs:
         with:
           name: before-count
           path: before_count.txt
-
-# =========================
-# 🔹 5. AI FIX (SECRETS → ENV)
-# =========================
+  
+  # =========================
+  # 🔹 5. AI FIX (FULL AGENTIC)
+  # =========================
   ai-fix:
     runs-on: ubuntu-latest
     needs: semgrep
-
+  
     permissions:
       contents: write
       pull-requests: write
-
+  
+    env:
+      FIX_BRANCH: ai-fix-${{ github.run_id }}
+  
     steps:
       - uses: actions/checkout@v4
-
+  
       - uses: actions/download-artifact@v4
         with:
           name: semgrep-report
           path: reports
-
-      # 🔹 Fix git branch issues (IMPORTANT)
+  
+      # =========================
+      # 🔹 Prepare Git Branch
+      # =========================
       - name: Prepare Git
         run: |
           git fetch origin
-          git checkout -B ai-fix-${{ github.run_id }}
+          git checkout -B $FIX_BRANCH
           git pull origin ${{ github.ref_name }} || true
-
+  
+      # =========================
       # 🔹 Install Ollama
+      # =========================
       - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > ollama.log 2>&1 &
           sleep 10
           ollama pull llama3
-
-      # 🔹 Fix Sensitive Data
-      - name: Extract Secrets → .env
+  
+      # =========================
+      # 🔹 AI FIX ENGINE
+      # =========================
+      - name: AI Fix Vulnerabilities
         run: |
           set -e
+  
           mkdir -p ai-fixes
           touch .env
-
-          VULN=$(jq -c '[.results[] | select(.extra.message | test("secret|token|password|api[_-]?key"; "i"))][0]' reports/semgrep.json)
-
-          if [ "$VULN" = "null" ] || [ -z "$VULN" ]; then
+  
+          TOTAL=$(jq '.results | length' reports/semgrep.json 2>/dev/null || echo 0)
+  
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "No vulnerabilities found"
             echo "skip_pr=true" >> $GITHUB_ENV
             exit 0
           fi
-
-          FILE=$(echo "$VULN" | jq -r '.path')
-          START=$(echo "$VULN" | jq -r '.start.line')
-          END=$(echo "$VULN" | jq -r '.end.line')
-
-          SNIPPET=$(sed -n "${START},${END}p" "$FILE")
-
-          VAR_NAME=$(echo "$SNIPPET" | grep -oE '[a-zA-Z_]+ *= *".*"' | cut -d '=' -f1 | tr -d ' ')
-          VAR_VALUE=$(echo "$SNIPPET" | grep -oE '"[^"]+"' | head -1 | tr -d '"')
-
-          ENV_VAR=$(echo "$VAR_NAME" | tr '[:lower:]' '[:upper:]')
-
-          ENCODED=$(echo -n "$VAR_VALUE" | base64)
-
-          echo "$ENV_VAR=$ENCODED" >> .env
-
-          # Replace code
-          MODIFIED="ai-fixes/$FILE"
-          mkdir -p "$(dirname "$MODIFIED")"
-
-          awk -v start="$START" -v end="$END" -v var="$ENV_VAR" '
-            NR==start {
-              gsub(/".*"/, "new String(java.util.Base64.getDecoder().decode(System.getenv(\"" var "\")))")
-              print
-              next
-            }
-            NR<start || NR>end {print}
-          ' "$FILE" > "$MODIFIED"
-
+  
+          echo "Found $TOTAL vulnerabilities"
+  
+          jq -c '.results[]' reports/semgrep.json | while read -r VULN; do
+  
+            FILE=$(echo "$VULN" | jq -r '.path')
+            START=$(echo "$VULN" | jq -r '.start.line')
+            END=$(echo "$VULN" | jq -r '.end.line')
+            MESSAGE=$(echo "$VULN" | jq -r '.extra.message')
+  
+            echo "Processing: $FILE ($START-$END)"
+  
+            if [ ! -f "$FILE" ]; then
+              echo "File not found, skipping"
+              continue
+            fi
+  
+            SNIPPET=$(sed -n "${START},${END}p" "$FILE")
+  
+            if [ -z "$SNIPPET" ]; then
+              echo "Empty snippet, skipping"
+              continue
+            fi
+  
+            # =========================
+            # 🔐 CASE 1: Sensitive Data
+            # =========================
+            if echo "$MESSAGE" | grep -qiE "secret|token|password|api[_-]?key"; then
+  
+              echo "🔐 Handling sensitive data"
+  
+              VAR_NAME=$(echo "$SNIPPET" | grep -oE '[a-zA-Z_]+ *= *".*"' | cut -d '=' -f1 | tr -d ' ')
+              VAR_VALUE=$(echo "$SNIPPET" | grep -oE '"[^"]+"' | head -1 | tr -d '"')
+  
+              [ -z "$VAR_NAME" ] && continue
+  
+              ENV_VAR=$(echo "$VAR_NAME" | tr '[:lower:]' '[:upper:]')
+  
+              ENCODED=$(echo -n "$VAR_VALUE" | base64)
+  
+              if ! grep -q "^$ENV_VAR=" .env; then
+                echo "$ENV_VAR=$ENCODED" >> .env
+              fi
+  
+              FIXED=$(echo "$SNIPPET" | sed "s/\".*\"/new String(java.util.Base64.getDecoder().decode(System.getenv(\"$ENV_VAR\")))/")
+  
+            else
+            # =========================
+            # 🤖 CASE 2: General Vulnerability
+            # =========================
+  
+              echo "🤖 Fixing with AI"
+  
+              PROMPT="Fix this security vulnerability in code:
+  
+          Rules:
+          - Keep logic same
+          - Fix vulnerability properly
+          - Return ONLY fixed code
+          
+          $SNIPPET"
+          
+                      FIXED=$(echo "$PROMPT" | ollama run llama3)
+          
+                    fi
+          
+                    [ -z "$FIXED" ] && continue
+          
+                    NEW_FILE="ai-fixes/${FILE}"
+          
+                    mkdir -p "$(dirname "$NEW_FILE")"
+          
+                    awk -v start="$START" -v end="$END" -v fix="$FIXED" '
+                      NR==start {print fix}
+                      NR<start || NR>end {print}
+                    ' "$FILE" > "$NEW_FILE"
+          
+                  done
+  
+      # =========================
       # 🔹 Prepare Commit
+      # =========================
       - name: Prepare Changes
         run: |
           echo ".env" >> .gitignore
           echo "reports/" >> .gitignore
           echo "ollama.log" >> .gitignore
-      
-          # ❌ DO NOT add .env
-          git add ai-fixes/ .gitignore
-      
+  
+          # Create safe template
+          cp .env .env.example || true
+          sed -i 's/=.*$/=REDACTED/' .env.example || true
+  
+          git add ai-fixes/ .env.example .gitignore
+  
           if git diff --cached --quiet; then
             echo "skip_pr=true" >> $GITHUB_ENV
           fi
-
-      # 🔹 Generate PR Body
+  
+      # =========================
+      # 🔹 Generate PR Details
+      # =========================
       - name: Generate PR Details
+        if: env.skip_pr != 'true'
         run: |
-          set -e
-      
-          echo "## 🤖 AI Security Fix" > pr_details.md
-      
+          echo "## 🤖 AI Security Fix Report" > pr_details.md
+  
           FILES=$(git diff --cached --name-only)
-      
+  
           for file in $FILES; do
-            echo "Processing $file..."
-      
-            DIFF=$(git diff --cached "$file" | head -n 200)
-      
-            # ✅ FIX: Proper heredoc (NO indentation on EOF)
-            EXPLANATION=$(ollama run llama3 <<EOF
-            Explain this security fix in simple terms:
-            - What was wrong
-            - Why it's risky
-            - How the fix improves security
+  
+            DIFF=$(git diff --cached "$file" | head -n 150)
+  
+            PROMPT="Explain this fix:
+            - vulnerability
+            - risk
+            - improvement
             
-            $DIFF
-            EOF
-            )
+            $DIFF"
             
-                  {
-                    echo "### 📄 $file"
-                    echo '```diff'
-                    echo "$DIFF"
-                    echo '```'
-                    echo ""
-                    echo "💡 Explanation:"
-                    echo "$EXPLANATION"
-                    echo ""
-                    echo "---"
-                  } >> pr_details.md
+                      EXPLANATION=$(echo "$PROMPT" | ollama run llama3)
             
-                done
-
-      # 🔹 Create PR (FIXED)
+                      {
+                        echo "### 📄 $file"
+                        echo '```diff'
+                        echo "$DIFF"
+                        echo '```'
+                        echo ""
+                        echo "$EXPLANATION"
+                        echo ""
+                        echo "---"
+                      } >> pr_details.md
+            
+                    done
+  
+      # =========================
+      # 🔹 Create Pull Request
+      # =========================
       - name: Create PR
         if: env.skip_pr != 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          branch: ai-fix-${{ github.run_id }}
+          branch: ${{ env.FIX_BRANCH }}
           base: ${{ github.ref_name }}
-          title: "🤖 AI Fix: Secrets moved to environment variables"
+          title: "🤖 AI Security Fix (Automated)"
           body-path: pr_details.md
-          commit-message: "🤖 AI Fix: externalized sensitive data"
+          commit-message: "🤖 AI Fix: vulnerabilities patched + secrets externalized"
           delete-branch: true
 
 # =========================
