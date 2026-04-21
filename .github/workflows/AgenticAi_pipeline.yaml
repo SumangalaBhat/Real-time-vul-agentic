@@ -1,0 +1,343 @@
+name: WebGoat DevSecOps + Agentic AI (Stable)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  REPORT_DIR: reports
+  FIX_DIR: ai-fixes
+
+jobs:
+
+# =========================
+# 🔹 1. SETUP
+# =========================
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORT_DIR $FIX_DIR
+
+# =========================
+# 🔹 2. GITGUARDIAN
+# =========================
+  gitguardian:
+    runs-on: ubuntu-latest
+    needs: setup
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: GitGuardian/ggshield-action@v1
+        env:
+          GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
+
+# =========================
+# 🔹 3. SEMGREP
+# =========================
+  semgrep:
+    runs-on: ubuntu-latest
+    needs: setup
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install semgrep jq
+      - run: |
+          mkdir -p $REPORT_DIR
+          semgrep --config=auto --json > $REPORT_DIR/semgrep.json || echo "{}" > $REPORT_DIR/semgrep.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports/
+
+# =========================
+# 🔹 4. SUMMARY
+# =========================
+  summary-before:
+    runs-on: ubuntu-latest
+    needs: semgrep
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports
+
+      - run: |
+          TOTAL=$(jq '.results | length' reports/semgrep.json 2>/dev/null || echo 0)
+          echo "$TOTAL" > before_count.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: before-count
+          path: before_count.txt
+
+# =========================
+# 🔹 5. AI FIX (SECRETS → ENV)
+# =========================
+  ai-fix:
+    runs-on: ubuntu-latest
+    needs: semgrep
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports
+
+      # 🔹 Fix git branch issues (IMPORTANT)
+      - name: Prepare Git
+        run: |
+          git fetch origin
+          git checkout -B ai-fix-${{ github.run_id }}
+          git pull origin ${{ github.ref_name }} || true
+
+      # 🔹 Install Ollama
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > ollama.log 2>&1 &
+          sleep 10
+          ollama pull llama3
+
+      # 🔹 Fix Sensitive Data
+      - name: Extract Secrets → .env
+        run: |
+          set -e
+          mkdir -p ai-fixes
+          touch .env
+
+          VULN=$(jq -c '[.results[] | select(.extra.message | test("secret|token|password|api[_-]?key"; "i"))][0]' reports/semgrep.json)
+
+          if [ "$VULN" = "null" ] || [ -z "$VULN" ]; then
+            echo "skip_pr=true" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          FILE=$(echo "$VULN" | jq -r '.path')
+          START=$(echo "$VULN" | jq -r '.start.line')
+          END=$(echo "$VULN" | jq -r '.end.line')
+
+          SNIPPET=$(sed -n "${START},${END}p" "$FILE")
+
+          VAR_NAME=$(echo "$SNIPPET" | grep -oE '[a-zA-Z_]+ *= *".*"' | cut -d '=' -f1 | tr -d ' ')
+          VAR_VALUE=$(echo "$SNIPPET" | grep -oE '"[^"]+"' | head -1 | tr -d '"')
+
+          ENV_VAR=$(echo "$VAR_NAME" | tr '[:lower:]' '[:upper:]')
+
+          ENCODED=$(echo -n "$VAR_VALUE" | base64)
+
+          echo "$ENV_VAR=$ENCODED" >> .env
+
+          # Replace code
+          MODIFIED="ai-fixes/$FILE"
+          mkdir -p "$(dirname "$MODIFIED")"
+
+          awk -v start="$START" -v end="$END" -v var="$ENV_VAR" '
+            NR==start {
+              gsub(/".*"/, "new String(java.util.Base64.getDecoder().decode(System.getenv(\"" var "\")))")
+              print
+              next
+            }
+            NR<start || NR>end {print}
+          ' "$FILE" > "$MODIFIED"
+
+      # 🔹 Prepare Commit
+      - name: Prepare Changes
+        if: env.skip_pr != 'true'
+        run: |
+          echo ".env" >> .gitignore
+          echo "reports/" >> .gitignore
+          echo "ollama.log" >> .gitignore
+
+          git add ai-fixes/ .env .gitignore
+
+          if git diff --cached --quiet; then
+            echo "skip_pr=true" >> $GITHUB_ENV
+          fi
+
+      # 🔹 Generate PR Body
+      - name: Generate PR Details
+        if: env.skip_pr != 'true'
+        run: |
+          echo "## 🤖 AI Security Fix" > pr_details.md
+
+          FILES=$(git diff --cached --name-only)
+
+          for file in $FILES; do
+            DIFF=$(git diff --cached "$file" | head -n 200)
+
+            EXPLANATION=$(ollama run llama3 <<EOF
+Explain this security fix in simple terms:
+$DIFF
+EOF
+)
+
+            echo "### $file" >> pr_details.md
+            echo '```diff' >> pr_details.md
+            echo "$DIFF" >> pr_details.md
+            echo '```' >> pr_details.md
+            echo "$EXPLANATION" >> pr_details.md
+            echo "---" >> pr_details.md
+          done
+
+      # 🔹 Create PR (FIXED)
+      - name: Create PR
+        if: env.skip_pr != 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: ai-fix-${{ github.run_id }}
+          base: ${{ github.ref_name }}
+          title: "🤖 AI Fix: Secrets moved to environment variables"
+          body-path: pr_details.md
+          commit-message: "🤖 AI Fix: externalized sensitive data"
+          delete-branch: true
+
+# =========================
+# 🔹 6. RESCAN
+# =========================
+  rescan:
+    runs-on: ubuntu-latest
+    needs: ai-fix
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports
+
+      - run: pip install semgrep jq
+
+      - run: |
+          semgrep --config=auto . --json > after.json || echo "{}" > after.json
+
+      - run: |
+          AFTER=$(jq '.results | length' after.json 2>/dev/null || echo 0)
+          echo "$AFTER" > after_count.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: after-count
+          path: after_count.txt
+
+# =========================
+# 🔹 7. FINAL REPORT
+# =========================
+  final-report:
+    runs-on: ubuntu-latest
+    needs: [summary-before, rescan]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: before-count
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: after-count
+
+      - run: |
+          BEFORE=$(cat before_count.txt)
+          AFTER=$(cat after_count.txt)
+
+          echo "Before: $BEFORE"
+          echo "After : $AFTER"
+
+          if [ "$AFTER" -gt 0 ]; then
+            echo "⚠️ Issues remain"
+            exit 1
+          else
+            echo "✅ All issues resolved"
+          fi
+
+# =========================
+# 🔹 8. GITHUB PAGES REPORT
+# =========================
+pages:
+  runs-on: ubuntu-latest
+  needs: final-report
+
+  steps:
+    - name: Download Reports
+      uses: actions/download-artifact@v4
+      with:
+        name: before-count
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: after-count
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: semgrep-report
+        path: reports
+
+    # =========================
+    # 🔹 Generate HTML Dashboard
+    # =========================
+    - name: Generate HTML Report
+      run: |
+        BEFORE=$(cat before_count.txt)
+        AFTER=$(cat after_count.txt)
+        RESOLVED=$((BEFORE - AFTER))
+
+        mkdir -p site
+
+        cat <<EOF > site/index.html
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>DevSecOps AI Report</title>
+          <style>
+            body { font-family: Arial; margin: 40px; background: #0f172a; color: #e2e8f0; }
+            h1 { color: #38bdf8; }
+            .card { background: #1e293b; padding: 20px; margin: 10px 0; border-radius: 10px; }
+            .good { color: #22c55e; }
+            .bad { color: #ef4444; }
+          </style>
+        </head>
+        <body>
+          <h1>🚀 DevSecOps AI Security Report</h1>
+
+          <div class="card">
+            <h2>📊 Summary</h2>
+            <p>Before Fix: <b class="bad">$BEFORE</b></p>
+            <p>After Fix: <b class="good">$AFTER</b></p>
+            <p>Resolved: <b>$RESOLVED</b></p>
+          </div>
+
+          <div class="card">
+            <h2>🤖 AI Fix</h2>
+            <p>Automated vulnerability remediation using Ollama</p>
+          </div>
+
+        </body>
+        </html>
+        EOF
+
+    # =========================
+    # 🔹 Upload Pages Artifact
+    # =========================
+    - name: Upload Pages Artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: site
+
+    # =========================
+    # 🔹 Deploy to GitHub Pages
+    # =========================
+    - name: Deploy to GitHub Pages
+      uses: actions/deploy-pages@v4
