@@ -120,101 +120,112 @@ jobs:
           sleep 10
           ollama pull llama3
   
+       # =========================
+      # 🔹 AI FIX ENGINE (Sensitive Data Only)
       # =========================
-      # 🔹 AI FIX ENGINE
-      # =========================
-      - name: AI Fix Vulnerabilities
+      - name: AI Fix High Sensitive Data
         run: |
           set -e
-  
+      
           mkdir -p ai-fixes
           touch .env
-  
-          TOTAL=$(jq '.results | length' reports/semgrep.json 2>/dev/null || echo 0)
-  
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "No vulnerabilities found"
+      
+          echo "🔍 Filtering HIGH sensitive data issues only..."
+      
+          # ✅ FILTER FIRST (Critical Fix)
+          SENSITIVE=$(jq -c '
+            .results[]
+            | select(.extra.message | test("secret|token|password|api[_-]?key"; "i"))
+          ' reports/semgrep.json)
+      
+          # ✅ Exit early if none
+          if [ -z "$SENSITIVE" ]; then
+            echo "✅ No sensitive data issues found"
             echo "skip_pr=true" >> $GITHUB_ENV
             exit 0
           fi
-  
-          echo "Found $TOTAL vulnerabilities"
-  
-          jq -c '.results[]' reports/semgrep.json | while read -r VULN; do
-  
+      
+          echo "$SENSITIVE" | while read -r VULN; do
+      
             FILE=$(echo "$VULN" | jq -r '.path')
             START=$(echo "$VULN" | jq -r '.start.line')
             END=$(echo "$VULN" | jq -r '.end.line')
-            MESSAGE=$(echo "$VULN" | jq -r '.extra.message')
-  
-            echo "Processing: $FILE ($START-$END)"
-  
+      
+            echo "🔐 Processing: $FILE ($START-$END)"
+      
+            # Validate file
             if [ ! -f "$FILE" ]; then
-              echo "File not found, skipping"
+              echo "⚠️ File not found, skipping"
               continue
             fi
-  
+      
             SNIPPET=$(sed -n "${START},${END}p" "$FILE")
-  
+      
             if [ -z "$SNIPPET" ]; then
-              echo "Empty snippet, skipping"
+              echo "⚠️ Empty snippet, skipping"
               continue
             fi
-  
+      
             # =========================
-            # 🔐 CASE 1: Sensitive Data
+            # 🔐 Extract Secret Safely
             # =========================
-            if echo "$MESSAGE" | grep -qiE "secret|token|password|api[_-]?key"; then
-  
-              echo "🔐 Handling sensitive data"
-  
-              VAR_NAME=$(echo "$SNIPPET" | grep -oE '[a-zA-Z_]+ *= *".*"' | cut -d '=' -f1 | tr -d ' ')
-              VAR_VALUE=$(echo "$SNIPPET" | grep -oE '"[^"]+"' | head -1 | tr -d '"')
-  
-              [ -z "$VAR_NAME" ] && continue
-  
-              ENV_VAR=$(echo "$VAR_NAME" | tr '[:lower:]' '[:upper:]')
-  
-              ENCODED=$(echo -n "$VAR_VALUE" | base64)
-  
-              if ! grep -q "^$ENV_VAR=" .env; then
-                echo "$ENV_VAR=$ENCODED" >> .env
-              fi
-  
-              FIXED=$(echo "$SNIPPET" | sed "s/\".*\"/new String(java.util.Base64.getDecoder().decode(System.getenv(\"$ENV_VAR\")))/")
-  
-            else
+      
+            VAR_LINE=$(echo "$SNIPPET" | grep -E '[a-zA-Z_][a-zA-Z0-9_]* *= *".+"' | head -1)
+      
+            if [ -z "$VAR_LINE" ]; then
+              echo "⚠️ No assignable secret found, skipping"
+              continue
+            fi
+      
+            VAR_NAME=$(echo "$VAR_LINE" | cut -d '=' -f1 | tr -d ' ')
+            VAR_VALUE=$(echo "$VAR_LINE" | sed -E 's/.*"([^"]+)".*/\1/')
+      
+            if [ -z "$VAR_NAME" ] || [ -z "$VAR_VALUE" ]; then
+              echo "⚠️ Extraction failed, skipping"
+              continue
+            fi
+      
+            ENV_VAR=$(echo "$VAR_NAME" | tr '[:lower:]' '[:upper:]')
+      
+            echo "🔑 Extracted variable: $ENV_VAR"
+      
             # =========================
-            # 🤖 CASE 2: General Vulnerability
+            # 🔐 Store in .env (Base64 encoded)
             # =========================
-  
-              echo "🤖 Fixing with AI"
-  
-              PROMPT="Fix this security vulnerability in code:
-  
-          Rules:
-          - Keep logic same
-          - Fix vulnerability properly
-          - Return ONLY fixed code
-          
-          $SNIPPET"
-          
-                      FIXED=$(echo "$PROMPT" | ollama run llama3)
-          
-                    fi
-          
-                    [ -z "$FIXED" ] && continue
-          
-                    NEW_FILE="ai-fixes/${FILE}"
-          
-                    mkdir -p "$(dirname "$NEW_FILE")"
-          
-                    awk -v start="$START" -v end="$END" -v fix="$FIXED" '
-                      NR==start {print fix}
-                      NR<start || NR>end {print}
-                    ' "$FILE" > "$NEW_FILE"
-          
-                  done
+      
+            ENCODED=$(echo -n "$VAR_VALUE" | base64)
+      
+            if ! grep -q "^$ENV_VAR=" .env; then
+              echo "$ENV_VAR=$ENCODED" >> .env
+            fi
+      
+            # =========================
+            # 🔁 Replace in Code Safely
+            # =========================
+      
+            FIXED=$(echo "$SNIPPET" | sed \
+              "s/\"$VAR_VALUE\"/new String(java.util.Base64.getDecoder().decode(System.getenv(\"$ENV_VAR\")))/g")
+      
+            if [ -z "$FIXED" ]; then
+              echo "⚠️ Fix generation failed"
+              continue
+            fi
+      
+            # =========================
+            # 📂 Write Fixed File
+            # =========================
+      
+            NEW_FILE="ai-fixes/$FILE"
+            mkdir -p "$(dirname "$NEW_FILE")"
+      
+            awk -v start="$START" -v end="$END" -v fix="$FIXED" '
+              NR==start {print fix}
+              NR<start || NR>end {print}
+            ' "$FILE" > "$NEW_FILE"
+      
+            echo "✅ Fixed file created: $NEW_FILE"
+      
+          done
   
       # =========================
       # 🔹 Prepare Commit
