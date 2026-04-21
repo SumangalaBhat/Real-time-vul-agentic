@@ -132,13 +132,11 @@ jobs:
       
           echo "🔍 Filtering HIGH sensitive data issues only..."
       
-          # ✅ FILTER FIRST (Critical Fix)
           SENSITIVE=$(jq -c '
             .results[]
             | select(.extra.message | test("secret|token|password|api[_-]?key"; "i"))
           ' reports/semgrep.json)
       
-          # ✅ Exit early if none
           if [ -z "$SENSITIVE" ]; then
             echo "✅ No sensitive data issues found"
             echo "skip_pr=true" >> $GITHUB_ENV
@@ -153,7 +151,14 @@ jobs:
       
             echo "🔐 Processing: $FILE ($START-$END)"
       
-            # Validate file
+            # =========================
+            # 🚫 SKIP NON-CODE FILES (CRITICAL FIX)
+            # =========================
+            if [[ "$FILE" =~ \.(html|xml|json|yaml|yml)$ ]]; then
+              echo "⚠️ Skipping non-code file: $FILE"
+              continue
+            fi
+      
             if [ ! -f "$FILE" ]; then
               echo "⚠️ File not found, skipping"
               continue
@@ -161,23 +166,19 @@ jobs:
       
             SNIPPET=$(sed -n "${START},${END}p" "$FILE")
       
-            if [ -z "$SNIPPET" ]; then
-              echo "⚠️ Empty snippet, skipping"
-              continue
-            fi
+            [ -z "$SNIPPET" ] && continue
       
             # =========================
-            # 🔐 Extract Secret Safely
+            # 🔐 STRICT VARIABLE EXTRACTION
             # =========================
-      
-            VAR_LINE=$(echo "$SNIPPET" | grep -E '[a-zA-Z_][a-zA-Z0-9_]* *= *".+"' | head -1)
+            VAR_LINE=$(echo "$SNIPPET" | grep -E '^[[:space:]]*(String|var|let|const)[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=' | head -1)
       
             if [ -z "$VAR_LINE" ]; then
-              echo "⚠️ No assignable secret found, skipping"
+              echo "⚠️ No valid variable assignment found, skipping"
               continue
             fi
       
-            VAR_NAME=$(echo "$VAR_LINE" | cut -d '=' -f1 | tr -d ' ')
+            VAR_NAME=$(echo "$VAR_LINE" | sed -E 's/.*(String|var|let|const)[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*=.*/\2/')
             VAR_VALUE=$(echo "$VAR_LINE" | sed -E 's/.*"([^"]+)".*/\1/')
       
             if [ -z "$VAR_NAME" ] || [ -z "$VAR_VALUE" ]; then
@@ -187,12 +188,11 @@ jobs:
       
             ENV_VAR=$(echo "$VAR_NAME" | tr '[:lower:]' '[:upper:]')
       
-            echo "🔑 Extracted variable: $ENV_VAR"
+            echo "🔑 Extracted: $ENV_VAR"
       
             # =========================
-            # 🔐 Store in .env (Base64 encoded)
+            # 🔐 STORE IN .env
             # =========================
-      
             ENCODED=$(echo -n "$VAR_VALUE" | base64)
       
             if ! grep -q "^$ENV_VAR=" .env; then
@@ -200,16 +200,24 @@ jobs:
             fi
       
             # =========================
-            # 🔁 Replace in Code Safely
+            # 🔁 SAFE REPLACEMENT (FIXED sed)
             # =========================
-      
             FIXED=$(echo "$SNIPPET" | sed \
-              "s/\"$VAR_VALUE\"/new String(java.util.Base64.getDecoder().decode(System.getenv(\"$ENV_VAR\")))/g")
+              "s|\"$VAR_VALUE\"|new String(java.util.Base64.getDecoder().decode(System.getenv(\"$ENV_VAR\")))|g")
       
-            if [ -z "$FIXED" ]; then
-              echo "⚠️ Fix generation failed"
-              continue
-            fi
+            [ -z "$FIXED" ] && continue
+      
+            NEW_FILE="ai-fixes/$FILE"
+            mkdir -p "$(dirname "$NEW_FILE")"
+      
+            awk -v start="$START" -v end="$END" -v fix="$FIXED" '
+              NR==start {print fix}
+              NR<start || NR>end {print}
+            ' "$FILE" > "$NEW_FILE"
+      
+            echo "✅ Fixed file created: $NEW_FILE"
+      
+          done
       
             # =========================
             # 📂 Write Fixed File
