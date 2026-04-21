@@ -277,25 +277,46 @@ jobs:
     # =========================
     # 🔹 Commit & Push
     # =========================
-      - name: Commit Changes
+      - name: Commit AI Fix Changes
         run: |
           git config user.name "ai-fix-bot"
           git config user.email "bot@users.noreply.github.com"
-    
-          # Save snippets for diff
-          echo "$SNIPPET" > old_snippet.txt
-          echo "$FIXED" > new_snippet.txt
-    
-          echo "🔍 Diff of changes:"
-          diff -u old_snippet.txt new_snippet.txt || true
-    
-          git add .
-    
-          # Commit message includes file + line range
-          git commit -m "🤖 AI Fix: $FILE lines $START-$END patched by Ollama AI Agent" \
-                      -m "Original vulnerable code replaced with secure version." \
-                      -m "See diff below:" \
-                      -m "$(diff -u old_snippet.txt new_snippet.txt || true)"
+      
+          # Stage only the modified file (safer than git add .)
+          git add "$FILE"
+      
+          echo "🔍 Detecting changes in $FILE..."
+      
+          # Get unified diff of staged changes
+          DIFF_OUTPUT=$(git diff --cached -U5 "$FILE" || true)
+      
+          echo "$DIFF_OUTPUT" > diff_output.txt
+      
+          echo "📌 Changed lines (with context):"
+          echo "$DIFF_OUTPUT"
+      
+          # Extract line numbers (added/removed)
+          LINE_INFO=$(echo "$DIFF_OUTPUT" | grep -E '^@@' || true)
+      
+          echo "📍 Line change summary:"
+          echo "$LINE_INFO"
+      
+          # Fallback if no diff found
+          if [ -z "$DIFF_OUTPUT" ]; then
+            echo "⚠️ No changes detected, skipping commit."
+            exit 0
+          fi
+      
+          # Trim diff for commit message (avoid overly large commits)
+          SHORT_DIFF=$(echo "$DIFF_OUTPUT" | head -n 50)
+      
+          # Commit with structured message
+          git commit -m "🤖 AI Fix (Ollama): $FILE updated" \
+                     -m "📍 Changed regions:" \
+                     -m "$LINE_INFO" \
+                     -m "🛠️ AI Agent: Ollama" \
+                     -m "🔍 Diff Preview:" \
+                     -m "$SHORT_DIFF"
 
 
 
